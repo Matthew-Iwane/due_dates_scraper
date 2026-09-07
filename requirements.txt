@@ -1,3 +1,4 @@
 gradescope-tool
 icalendar
 requests
+tqdm

@@ -1,0 +1,139 @@
+body {
+  font-family: system-ui, sans-serif;
+  margin: 2rem;
+  background: #0b0d12;
+  color: #e6e8ee;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  border-bottom: 1px solid #2a2e3a;
+}
+
+th {
+  color: #9aa4b2;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+}
+
+h1 {
+  font-size: 1.3rem;
+  margin-bottom: 0.25rem;
+}
+
+.updated {
+  color: #7d8698;
+  font-size: 0.85rem;
+  margin-bottom: 0.75rem;
+}
+
+/* -- legend -- */
+.legend {
+  margin-bottom: 1.5rem;
+  font-size: 0.8rem;
+  color: #9aa4b2;
+}
+
+.legend-item {
+  margin-right: 1.2rem;
+}
+
+.dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.35rem;
+}
+
+/* -- assignment type badge + row accent -- */
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 0.6rem;
+}
+
+tr.type-live-session {
+  border-left: 4px solid #a78bfa;
+}
+
+.badge.type-live-session {
+  background: #a78bfa26;
+  color: #a78bfa;
+}
+
+.dot.type-live-session {
+  background: #a78bfa;
+}
+
+tr.type-quiz {
+  border-left: 4px solid #f4c542;
+}
+
+.badge.type-quiz {
+  background: #f4c54226;
+  color: #f4c542;
+}
+
+.dot.type-quiz {
+  background: #f4c542;
+}
+
+tr.type-assignment {
+  border-left: 4px solid #4fd1c5;
+}
+
+.badge.type-assignment {
+  background: #4fd1c526;
+  color: #4fd1c5;
+}
+
+.dot.type-assignment {
+  background: #4fd1c5;
+}
+
+tr.type-task {
+  border-left: 4px solid #9aa4b2;
+}
+
+.badge.type-task {
+  background: #9aa4b226;
+  color: #9aa4b2;
+}
+
+.dot.type-task {
+  background: #9aa4b2;
+}
+
+/* -- due-date urgency -- */
+td.due {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+tr.overdue td.due {
+  color: #ff7b7b;
+  font-weight: 700;
+}
+
+tr.due-soon td.due {
+  color: #ffb454;
+  font-weight: 700;
+}
+
+tr.due-upcoming td.due {
+  color: #f4d35e;
+}

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from icalendar import Calendar
+from tqdm import tqdm
 
 EASTERN = ZoneInfo("America/New_York")
 TOKYO = ZoneInfo("Asia/Tokyo")
@@ -34,7 +35,7 @@ GS_EMAIL = os.environ.get("GS_EMAIL")
 GS_PASSWORD = os.environ.get("GS_PASSWORD")
 BB_ICS_URL = os.environ.get("BB_ICS_URL")
 GS_TERM = os.environ.get("GS_TERM", "").strip()
-DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "7"))
+DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "10"))
 DAYS_BEHIND = int(os.environ.get("DAYS_BEHIND", "1"))
 
 
@@ -98,7 +99,8 @@ def fetch_gradescope() -> list[DueItem]:
 
     items: list[DueItem] = []
     gs = Gradescope(GS_EMAIL, GS_PASSWORD)
-    for course in gs.get_courses(role=Role.STUDENT):
+    courses = list(gs.get_courses(role=Role.STUDENT))
+    for course in tqdm(courses, desc="Gradescope courses", unit="course"):
         if GS_TERM and GS_TERM.lower() not in (course.term or "").lower():
             continue
         for a in gs.get_assignments_as_student(course):
@@ -123,9 +125,11 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
         print("Skipping Blackboard: set BB_ICS_URL.", file=sys.stderr)
         return []
 
-    resp = requests.get(BB_ICS_URL, timeout=30)
-    resp.raise_for_status()
-    cal = Calendar.from_ical(resp.content)
+    with tqdm(total=1, desc="Blackboard calendar", unit="req") as pbar:
+        resp = requests.get(BB_ICS_URL, timeout=30)
+        resp.raise_for_status()
+        cal = Calendar.from_ical(resp.content)
+        pbar.update(1)
 
     events = list(cal.walk("VEVENT"))
 
@@ -137,7 +141,7 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
         return []
 
     items: list[DueItem] = []
-    for component in events:
+    for component in tqdm(events, desc="Blackboard events", unit="event"):
         dt = component.get("dtstart")
         if dt is None:
             continue
@@ -167,6 +171,25 @@ def filter_window(items: list[DueItem], now: datetime) -> list[DueItem]:
     return [i for i in items if i.due_utc and lower <= i.due_utc <= upper]
 
 
+TYPE_SLUGS = {
+    "Live Session": "type-live-session",
+    "Quiz": "type-quiz",
+    "Assignment": "type-assignment",
+    "Task": "type-task",
+}
+
+
+def _classify_type(title: str, source: str) -> str:
+    t = title.lower()
+    if "live session" in t:
+        return "Live Session"
+    if "quiz" in t:
+        return "Quiz"
+    if "assignment" in t or source == "Gradescope":
+        return "Assignment"
+    return "Task"
+
+
 def render_html(items: list[DueItem]) -> str:
     items = [i for i in items if i.due_utc is not None]
     items.sort(key=lambda i: i.due_utc)
@@ -176,34 +199,47 @@ def render_html(items: list[DueItem]) -> str:
     for i in items:
         est = i.due_utc.astimezone(EASTERN).strftime("%a %b %d, %I:%M %p")
         jst = i.due_utc.astimezone(TOKYO).strftime("%a %b %d, %I:%M %p")
-        row_class = "overdue" if i.due_utc < now else ""
+
+        delta = i.due_utc - now
+        if delta.total_seconds() < 0:
+            urgency_class = "overdue"
+        elif delta <= timedelta(hours=24):
+            urgency_class = "due-soon"
+        elif delta <= timedelta(days=3):
+            urgency_class = "due-upcoming"
+        else:
+            urgency_class = ""
+
+        item_type = _classify_type(i.title, i.source)
+        type_slug = TYPE_SLUGS[item_type]
+
         rows.append(
-            f'<tr class="{row_class}">'
-            f"<td>{i.source}</td><td>{i.course}</td><td>{i.title}</td>"
-            f"<td>{est} EST</td><td>{jst} JST</td></tr>"
+            f'<tr class="{urgency_class} {type_slug}">'
+            f"<td>{i.source}</td><td>{i.course}</td>"
+            f'<td><span class="badge {type_slug}">{item_type}</span>{i.title}</td>'
+            f'<td class="due">{est} EST</td><td class="due">{jst} JST</td></tr>'
         )
 
     body_rows = "".join(rows) if rows else '<tr><td colspan="5">No due dates found.</td></tr>'
     generated = datetime.now(EASTERN).strftime("%b %d, %Y %I:%M %p")
+
+    legend = "".join(
+        f'<span class="legend-item"><span class="dot {slug}"></span>{label}</span>'
+        for label, slug in TYPE_SLUGS.items()
+        if label != "Task"
+    )
 
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>Due dates</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; margin: 2rem; background: #0b0d12; color: #e6e8ee; }}
-  table {{ width: 100%; border-collapse: collapse; }}
-  th, td {{ padding: 0.6rem 0.8rem; text-align: left; border-bottom: 1px solid #2a2e3a; }}
-  th {{ color: #9aa4b2; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; }}
-  tr.overdue td {{ color: #ff7b7b; }}
-  h1 {{ font-size: 1.3rem; margin-bottom: 0.25rem; }}
-  .updated {{ color: #7d8698; font-size: 0.85rem; margin-bottom: 1.5rem; }}
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
   <h1>Upcoming due dates</h1>
   <div class="updated">Generated {generated} EST</div>
+  <div class="legend">{legend}</div>
   <table>
     <tr><th>Source</th><th>Course</th><th>Assignment</th><th>Due (EST)</th><th>Due (JST)</th></tr>
     {body_rows}
