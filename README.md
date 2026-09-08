@@ -70,3 +70,7 @@ wherever it actually lives in your feed.
   on what's actually still due.
 - All-day Blackboard events (no specific time) show as midnight in both
   columns since no time is attached.
+
+
+  NOTE:
+  HTML is generated per run, different data every week. 
