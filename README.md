@@ -28,12 +28,11 @@ This is a real, sanctioned Blackboard feature, not scraping:
 
 ### Only current stuff, not every course you've ever taken
 
-- `DAYS_AHEAD` (default `7`) and `DAYS_BEHIND` (default `1`) keep only items
+- `DAYS_AHEAD` (default `10`) and `DAYS_BEHIND` (default `1`) keep only items
   due within that window of "now". This is what actually clears out old
   semesters: a finished course's due dates are months in the past, well
   outside the window, so they drop out regardless of which course they're
-  from. Add `DAYS_AHEAD=14` to your `.env` for a two-week look-ahead instead
-  of one.
+  from. Add `DAYS_AHEAD=14` to your `.env` for a two-week look-ahead instead.
 - `GS_TERM` (optional, e.g. `GS_TERM=Fall 2026`) skips Gradescope courses
   whose term doesn't match, before even fetching their assignments. Use the
   exact text Gradescope shows next to your current courses. This only
@@ -70,6 +69,10 @@ wherever it actually lives in your feed.
   on what's actually still due.
 - All-day Blackboard events (no specific time) show as midnight in both
   columns since no time is attached.
+- Progress bars (via `tqdm`) print to the terminal while fetching Gradescope
+  courses and the Blackboard calendar, so a slow run doesn't look hung.
+- Styling for `due_dates.html` lives in `style.css`, generated alongside it;
+  `due_dates.py` only emits class names, so tweak colors/layout there.
 
 
   NOTE:

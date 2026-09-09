@@ -16,6 +16,10 @@ TOKYO = ZoneInfo("Asia/Tokyo")
 
 HERE = Path(__file__).parent
 
+# Silence tqdm's progress bars when output isn't a terminal (e.g. cron
+# redirected to a log file), so the log doesn't fill up with carriage returns.
+_TTY = sys.stderr.isatty()
+
 
 # ---- tiny .env loader, so we don't need an extra dependency for this ----
 def _load_dotenv(path: Path = HERE / ".env") -> None:
@@ -100,7 +104,7 @@ def fetch_gradescope() -> list[DueItem]:
     items: list[DueItem] = []
     gs = Gradescope(GS_EMAIL, GS_PASSWORD)
     courses = list(gs.get_courses(role=Role.STUDENT))
-    for course in tqdm(courses, desc="Gradescope courses", unit="course"):
+    for course in tqdm(courses, desc="Gradescope courses", unit="course", disable=not _TTY):
         if GS_TERM and GS_TERM.lower() not in (course.term or "").lower():
             continue
         for a in gs.get_assignments_as_student(course):
@@ -125,7 +129,7 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
         print("Skipping Blackboard: set BB_ICS_URL.", file=sys.stderr)
         return []
 
-    with tqdm(total=1, desc="Blackboard calendar", unit="req") as pbar:
+    with tqdm(total=1, desc="Blackboard calendar", unit="req", disable=not _TTY) as pbar:
         resp = requests.get(BB_ICS_URL, timeout=30)
         resp.raise_for_status()
         cal = Calendar.from_ical(resp.content)
@@ -141,7 +145,7 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
         return []
 
     items: list[DueItem] = []
-    for component in tqdm(events, desc="Blackboard events", unit="event"):
+    for component in tqdm(events, desc="Blackboard events", unit="event", disable=not _TTY):
         dt = component.get("dtstart")
         if dt is None:
             continue
@@ -248,12 +252,21 @@ def render_html(items: list[DueItem]) -> str:
 </html>"""
 
 
+def _safe_fetch(name: str, fetch) -> list[DueItem]:
+    """Run a fetch_* function, but don't let one source's failure wipe out the other's."""
+    try:
+        return fetch()
+    except Exception as exc:
+        print(f"Warning: {name} fetch failed ({exc}); continuing without it.", file=sys.stderr)
+        return []
+
+
 def main() -> None:
     if "--inspect-bb" in sys.argv:
         fetch_blackboard(inspect_only=True)
         return
 
-    items = fetch_gradescope() + fetch_blackboard()
+    items = _safe_fetch("Gradescope", fetch_gradescope) + _safe_fetch("Blackboard", fetch_blackboard)
     items = filter_window(items, datetime.now(timezone.utc))
     html = render_html(items)
     out_path = HERE / "due_dates.html"
