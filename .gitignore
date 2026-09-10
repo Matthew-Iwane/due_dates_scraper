@@ -17,3 +17,6 @@ __pycache__/
 
 # OS cruft
 .DS_Store
+
+# Due Dates HTML file (changes every time)
+due_dates.html

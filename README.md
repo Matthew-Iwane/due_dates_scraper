@@ -25,6 +25,30 @@ This is a real, sanctioned Blackboard feature, not scraping:
 3. Copy the link it gives you. Treat it like a password: anyone with that
    URL can see your due dates.
 
+Set it as `BB_ICS_URL` in `.env`. This combined feed covers every course,
+but Blackboard doesn't include a course name in any field of it, so every
+Blackboard row in the output just says "Blackboard" for its course.
+
+### Getting real course names instead of "Blackboard"
+
+If your Blackboard also lets you share a calendar from *inside* an
+individual course (Course > Calendar > Calendar Settings > Share Calendar,
+same flow as above but from within the course rather than your combined
+calendar), grab one URL per course and set `BB_ICS_URLS` in `.env` as a JSON
+object instead:
+
+```
+BB_ICS_URLS={"CS 651": "https://...", "DX 601": "https://..."}
+```
+
+Each feed's events get labeled with that course name directly, since the
+URL itself is now course-specific. If your school's Blackboard doesn't
+offer a per-course share link, this won't be available — `--inspect-bb`
+(below) will show whether a course-level feed looks any different from the
+combined one. If you set both `BB_ICS_URLS` and `BB_ICS_URL`, drop the
+combined one once the per-course feeds cover everything you need, or you'll
+get every event twice.
+
 
 ### Only current stuff, not every course you've ever taken
 

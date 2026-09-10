@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -38,6 +40,7 @@ _load_dotenv()
 GS_EMAIL = os.environ.get("GS_EMAIL")
 GS_PASSWORD = os.environ.get("GS_PASSWORD")
 BB_ICS_URL = os.environ.get("BB_ICS_URL")
+BB_ICS_URLS_RAW = os.environ.get("BB_ICS_URLS", "").strip()
 GS_TERM = os.environ.get("GS_TERM", "").strip()
 DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "10"))
 DAYS_BEHIND = int(os.environ.get("DAYS_BEHIND", "1"))
@@ -82,6 +85,24 @@ def _to_utc(dt: datetime | date) -> datetime | None:
     return None
 
 
+_MEETING_ID_RE = re.compile(r"Meeting ID:\s*([\d ]+\d)")
+
+
+def _extract_bb_title(component) -> str:
+    """Blackboard titles nearly-identical events (e.g. every course's weekly
+    call is just "Live Session") with nothing else in CATEGORIES/SUMMARY to
+    tell them apart. The Zoom meeting ID buried in DESCRIPTION is the only
+    per-event identifier available, so fold it into the title.
+    """
+    title = str(component.get("summary", "Untitled"))
+    description = component.get("description")
+    if description:
+        match = _MEETING_ID_RE.search(str(description))
+        if match:
+            title = f"{title} (Meeting ID: {match.group(1)})"
+    return title
+
+
 def _extract_bb_course(component) -> str:
     cats = component.get("categories")
     if cats is not None:
@@ -124,42 +145,68 @@ def fetch_gradescope() -> list[DueItem]:
     return items
 
 
+def _bb_feeds() -> list[tuple[str | None, str]]:
+    """Which Blackboard ICS feeds to fetch, as (course_label, url) pairs.
+
+    Blackboard's combined "all courses" feed (BB_ICS_URL) doesn't expose a
+    course name in any field. Per-course feeds (BB_ICS_URLS, a JSON object of
+    {"Course Name": "url"}, one per course's own Calendar > Share Calendar
+    link) don't either, but since each URL is course-specific we can label
+    its events with the course name ourselves.
+    """
+    feeds: list[tuple[str | None, str]] = []
+    if BB_ICS_URLS_RAW:
+        try:
+            parsed = json.loads(BB_ICS_URLS_RAW)
+        except json.JSONDecodeError as exc:
+            print(f"Warning: BB_ICS_URLS is not valid JSON ({exc}); ignoring it.", file=sys.stderr)
+        else:
+            feeds.extend(parsed.items())
+    if BB_ICS_URL:
+        feeds.append((None, BB_ICS_URL))
+    return feeds
+
+
 def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
-    if not BB_ICS_URL:
-        print("Skipping Blackboard: set BB_ICS_URL.", file=sys.stderr)
-        return []
-
-    with tqdm(total=1, desc="Blackboard calendar", unit="req", disable=not _TTY) as pbar:
-        resp = requests.get(BB_ICS_URL, timeout=30)
-        resp.raise_for_status()
-        cal = Calendar.from_ical(resp.content)
-        pbar.update(1)
-
-    events = list(cal.walk("VEVENT"))
-
-    if inspect_only:
-        for e in events[:5]:
-            print("---")
-            for key in ("summary", "dtstart", "dtend", "categories", "description"):
-                print(f"{key}: {e.get(key)}")
+    feeds = _bb_feeds()
+    if not feeds:
+        print("Skipping Blackboard: set BB_ICS_URL or BB_ICS_URLS.", file=sys.stderr)
         return []
 
     items: list[DueItem] = []
-    for component in tqdm(events, desc="Blackboard events", unit="event", disable=not _TTY):
-        dt = component.get("dtstart")
-        if dt is None:
+    for course_label, url in feeds:
+        desc = f"Blackboard calendar ({course_label or 'combined'})"
+        with tqdm(total=1, desc=desc, unit="req", disable=not _TTY) as pbar:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            cal = Calendar.from_ical(resp.content)
+            pbar.update(1)
+
+        events = list(cal.walk("VEVENT"))
+
+        if inspect_only:
+            print(f"=== {course_label or 'combined'} ===")
+            for e in events[:5]:
+                print("---")
+                for key in ("summary", "dtstart", "dtend", "categories", "description"):
+                    print(f"{key}: {e.get(key)}")
             continue
-        due = _to_utc(dt.dt)
-        if due is None:
-            continue
-        items.append(
-            DueItem(
-                source="Blackboard",
-                course=_extract_bb_course(component),
-                title=str(component.get("summary", "Untitled")),
-                due_utc=due,
+
+        for component in tqdm(events, desc=f"Blackboard events ({course_label or 'combined'})", unit="event", disable=not _TTY):
+            dt = component.get("dtstart")
+            if dt is None:
+                continue
+            due = _to_utc(dt.dt)
+            if due is None:
+                continue
+            items.append(
+                DueItem(
+                    source="Blackboard",
+                    course=course_label or _extract_bb_course(component),
+                    title=_extract_bb_title(component),
+                    due_utc=due,
+                )
             )
-        )
     return items
 
 
