@@ -3,6 +3,15 @@
 .env.*
 !.env.example
 
+# Blackboard browser session (auth cookies) and scraped dashboard/materials
+.bb_session/
+bb_dashboard_dump.html
+bb_timeout_debug.png
+bb_timeout_debug.html
+bb_course_dump.html
+bb_course_dump.png
+bb_materials/
+
 # Virtual environments
 .venv/
 venv/
@@ -20,3 +29,13 @@ __pycache__/
 
 # Due Dates HTML file (changes every time)
 due_dates.html
+
+# Raw lesson HTML cache (debugging)
+.bb_raw/
+
+# Google Drive OAuth
+google_credentials.json
+google_token.json
+
+# Per-run error log (rewritten every run)
+bb_materials_errors.log

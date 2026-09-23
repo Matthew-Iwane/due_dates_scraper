@@ -2,3 +2,6 @@ gradescope-tool
 icalendar
 requests
 tqdm
+playwright
+google-api-python-client
+google-auth-oauthlib

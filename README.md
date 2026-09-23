@@ -82,6 +82,66 @@ exactly what's in `summary`, `categories`, and `description`, then adjust
 `_extract_bb_course()` in `due_dates.py` to pull the course name from
 wherever it actually lives in your feed.
 
+## Pulling lesson material (bb_materials.py)
+
+Grabs a week's Blackboard lesson content and turns it into one PDF per week,
+sized for dropping into NotebookLM.
+
+```
+python bb_materials.py --list                               # see courses + sections
+python bb_materials.py --course CX651 CX698 DX601 --week 3  # all three, one login
+python bb_materials.py --course CX651 --all-weeks
+python bb_materials.py --course CX651 --week 3 --upload-drive
+```
+
+The linked **Required Reading** pages (open-access textbook chapters, man
+pages and so on) are fetched and appended by default — they're assigned
+material, so they belong in the week's document. Pass `--no-readings` to skip
+them.
+
+Links are found by looking under a "Required Reading" heading rather than by
+domain, which is what keeps Zoom links and BU nav pages out without needing a
+per-course allowlist. Readings behind a login (the library proxy, ILLiad) are
+skipped — they'd just 401. Linked PDFs are saved next to the week's PDF as
+their own files, so NotebookLM can take them directly.
+
+Pass several courses to `--course` so one Duo login covers all of them.
+Week matching looks for titles starting `Week N`, which CX651/CX698/DX601 use.
+CX500 numbers its sections `Module N` instead and won't match.
+
+A browser window opens and drives the BU login for you if you add your
+credentials to `.env`:
+
+```
+BU_USERNAME=your_bu_login_name
+BU_PASSWORD=your_bu_password
+```
+
+Without those it waits for you to type them in yourself. Either way the first
+run needs you to approve a Duo push on your phone — but the script ticks Duo's
+"trust this browser" box, and that cookie *does* persist in `.bb_session/`, so
+later runs should go straight through.
+
+Shibboleth's own session cookie is memory-only and dies with the browser
+process, which is why login can't be skipped entirely and this can't run
+unattended as a cron job the way `due_dates.py` can.
+
+The lessons in these courses aren't uploaded files. They're Blackboard "Ultra
+Documents" authored inline as HTML, so the script walks the course content
+tree via Blackboard's REST API, pulls each lesson body, inlines its images as
+data URIs, drops source files (`.c`, `.py`) in as code blocks, and prints the
+whole week to a single self-contained PDF. Anything that isn't an image or
+text (PDF slide decks, for instance) is saved next to the week's PDF as its
+own file, so it can be uploaded to NotebookLM separately.
+
+Occasional `[could not fetch: ... (HTTP 404)]` markers in the output are dead
+image references in the course itself, not a failure on this end.
+
+For `--upload-drive`, see the setup steps at the top of `drive_upload.py`
+(Google Cloud project, Drive API, OAuth desktop credentials) and set
+`GDRIVE_FOLDER_ID` in `.env`. Skip it and just drag the PDF into NotebookLM
+by hand — for one file a week that's honestly less work than the OAuth setup.
+
 ## Notes
 
 - Gradescope due dates come from the student assignment table's own
