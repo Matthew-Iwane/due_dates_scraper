@@ -13,10 +13,16 @@ then does the scraping.
 Required readings linked from each lesson are fetched and appended too,
 since they're part of the assigned material; --no-readings skips them.
 
+Announcements and instructor discussion posts come from the same session,
+via the announcements and discussions endpoints of that API, and print to
+their own PDFs per course -- they're timestamped rather than filed under a
+week, so they don't belong in a week's document.
+
 Usage:
     python bb_materials.py --course CX651 --week 3
     python bb_materials.py --course CX651 CX698 DX601 --week 3
     python bb_materials.py --course CX651 --all-weeks --no-readings
+    python bb_materials.py --course CX651 --announcements --discussions
 """
 
 from __future__ import annotations
@@ -30,7 +36,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from html import unescape as html_unescape
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -40,7 +46,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 from tqdm import tqdm
 
-from due_dates import _load_dotenv
+from due_dates import EASTERN, _load_dotenv
 
 _load_dotenv()
 
@@ -82,7 +88,7 @@ class Blackboard:
     def __init__(self, page):
         self.page = page
 
-    def api_get(self, url: str):
+    def api_get(self, url: str, note: str = ""):
         res = self.page.evaluate(
             """async (url) => {
                 const r = await fetch(url, {credentials: 'include'});
@@ -91,6 +97,12 @@ class Blackboard:
             url,
         )
         if res["status"] != 200:
+            # Announcements and discussions aren't turned on in every course,
+            # and a student session isn't entitled to every endpoint. `note`
+            # names the call so the log says which thing was unavailable
+            # instead of silently producing an empty document.
+            if note:
+                log_error(f"{note}: HTTP {res['status']} from {url}")
             return None
         try:
             return json.loads(res["body"])
@@ -116,6 +128,48 @@ class Blackboard:
 
     def content(self, course_id: str, content_id: str) -> dict:
         return self.api_get(f"{API}/courses/{course_id}/contents/{content_id}") or {}
+
+    def roster(self, course_id: str) -> dict[str, dict]:
+        """user id -> {name, role}, or empty if the session can't read it.
+
+        This is what turns the user ids on posts into names, and what tells
+        instructor posts apart from student ones.
+        """
+        data = self.api_get(
+            f"{API}/courses/{course_id}/users?expand=user&limit=200",
+            note="course roster",
+        )
+        out: dict[str, dict] = {}
+        for member in (data or {}).get("results", []):
+            user = member.get("user") or {}
+            name = user.get("name") or {}
+            full = " ".join(p for p in (name.get("given"), name.get("family")) if p)
+            out[member.get("userId", "")] = {
+                "name": full or user.get("userName", ""),
+                "role": member.get("courseRoleId", ""),
+            }
+        return out
+
+    def announcements(self, course_id: str) -> list[dict]:
+        data = self.api_get(
+            f"{API}/courses/{course_id}/announcements?limit=100",
+            note="course announcements",
+        )
+        return (data or {}).get("results", [])
+
+    def discussions(self, course_id: str) -> list[dict]:
+        data = self.api_get(
+            f"{API}/courses/{course_id}/discussions?limit=100",
+            note="discussion list",
+        )
+        return (data or {}).get("results", [])
+
+    def discussion_messages(self, course_id: str, discussion_id: str) -> list[dict]:
+        data = self.api_get(
+            f"{API}/courses/{course_id}/discussions/{discussion_id}/messages?limit=200",
+            note=f"discussion messages ({discussion_id})",
+        )
+        return (data or {}).get("results", [])
 
     def walk(self, course_id: str, items: list[dict], depth: int = 0, progress=None) -> list[Node]:
         """Recursively turn raw API items into Nodes, pulling document bodies."""
@@ -471,6 +525,34 @@ def count_assets(node: Node) -> int:
     return len(ASSET_TAG_RE.findall(node.body)) + sum(count_assets(c) for c in node.children)
 
 
+DOC_CSS = """
+  body { font-family: Georgia, 'Times New Roman', serif; line-height: 1.6;
+         max-width: 50em; margin: 2em auto; color: #111; }
+  h1 { border-bottom: 3px solid #333; padding-bottom: .3em; }
+  h2, h3, h4 { margin-top: 1.4em; color: #222; }
+  img { max-width: 100%; height: auto; }
+  .src { color: #666; font-size: .85em; word-break: break-all; }
+  .meta { color: #555; font-size: .9em; margin: .2em 0 1em; }
+  pre, code { background: #f4f4f4; font-family: Menlo, monospace; font-size: .9em; }
+  pre { padding: .8em; overflow-x: auto; white-space: pre-wrap; }
+  code { padding: 0 .15em; border-radius: 3px; }
+  /* One rule between posts. The first post needs none -- nor does the first
+     post under a forum heading, which already divides. */
+  .post { border-top: 1px solid #ccc; margin-top: 2.6em; padding-top: 1.5em; }
+  .post:first-of-type, h2 + .post { border-top: none; }
+  .post h2, .post h3 { margin-top: 0 }
+  /* Keep a post's heading and byline with the post in the PDF. */
+  h1, h2, h3, .meta { break-after: avoid; }
+"""
+
+
+def _document(title: str, body: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{_escape(title)}</title>
+<style>{DOC_CSS}</style></head>
+<body>{body}</body></html>"""
+
+
 def render_week_html(context, week: Node, asset_dir: Path, with_readings: bool = True) -> str:
     """Flatten a week's node tree into one printable HTML document."""
     parts: list[str] = []
@@ -512,19 +594,281 @@ def render_week_html(context, week: Node, asset_dir: Path, with_readings: bool =
             ):
                 parts.append(fetch_reading(url, label, asset_dir))
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>{week.title}</title>
-<style>
-  body {{ font-family: Georgia, 'Times New Roman', serif; line-height: 1.6;
-         max-width: 50em; margin: 2em auto; color: #111; }}
-  h1 {{ border-bottom: 3px solid #333; padding-bottom: .3em; }}
-  h2, h3, h4 {{ margin-top: 1.4em; color: #222; }}
-  img {{ max-width: 100%; height: auto; }}
-  .src {{ color: #666; font-size: .85em; word-break: break-all; }}
-  pre, code {{ background: #f4f4f4; font-family: Menlo, monospace; font-size: .9em; }}
-  pre {{ padding: .8em; overflow-x: auto; }}
-</style></head>
-<body>{"".join(parts)}</body></html>"""
+    return _document(week.title, "".join(parts))
+
+
+def write_pdf(context, html: str, base: Path) -> Path:
+    """Print a document to <base>.pdf, keeping the source HTML beside it."""
+    base.with_suffix(".html").write_text(html, encoding="utf-8")
+    pdf_page = context.new_page()
+    pdf_page.set_content(html, wait_until="load")
+    pdf_page.pdf(
+        path=str(base.with_suffix(".pdf")),
+        format="Letter",
+        margin={"top": "0.7in", "bottom": "0.7in", "left": "0.8in", "right": "0.8in"},
+        print_background=True,
+    )
+    pdf_page.close()
+    return base.with_suffix(".pdf")
+
+
+# ---- announcements and discussion posts ----
+
+# Everyone who speaks for the course rather than as a classmate. Graders and
+# course builders are deliberately out: they're staff, but they don't post.
+INSTRUCTOR_ROLES = {"Instructor", "TeachingAssistant"}
+
+
+@dataclass
+class Post:
+    title: str
+    byline: str
+    body: str
+
+
+def _when(raw: str) -> datetime | None:
+    """One of Blackboard's UTC timestamps, as Eastern time."""
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.astimezone(EASTERN)
+
+
+def _author(entry: dict, roster: dict[str, dict]) -> dict:
+    """Roster entry for whoever wrote a post.
+
+    Announcements name their author in `creator`, discussion messages in
+    `userId`; neither carries the name itself, only the id.
+    """
+    return roster.get(entry.get("creator") or entry.get("userId") or "", {})
+
+
+def _byline(entry: dict, roster: dict[str, dict], when_field: str) -> str:
+    who = _author(entry, roster)
+    stamp = _when(entry.get(when_field, ""))
+    bits = [
+        stamp.strftime("%a %b %d, %Y %H:%M ET") if stamp else "",
+        who.get("name", ""),
+        who.get("role", ""),
+    ]
+    return " · ".join(bit for bit in bits if bit)
+
+
+def _in_window(entry: dict, when_field: str, since_days: int | None) -> bool:
+    if since_days is None:
+        return True
+    stamp = _when(entry.get(when_field, ""))
+    # An undated post is kept: dropping it would hide something silently.
+    return stamp is None or stamp >= datetime.now(EASTERN) - timedelta(days=since_days)
+
+
+def collect_announcements(bb: Blackboard, course_id: str, roster: dict[str, dict],
+                          since_days: int | None) -> list[Post]:
+    """Course announcements, newest first."""
+    entries = [
+        e for e in bb.announcements(course_id) if _in_window(e, "created", since_days)
+    ]
+    entries.sort(key=lambda e: e.get("created", ""), reverse=True)
+    return [
+        Post(
+            title=e.get("title") or "(untitled announcement)",
+            byline=_byline(e, roster, "created"),
+            body=e.get("body") or "",
+        )
+        for e in entries
+    ]
+
+
+def collect_discussions(bb: Blackboard, course_id: str, roster: dict[str, dict],
+                        since_days: int | None,
+                        instructors_only: bool) -> list[tuple[str, list[Post]]]:
+    """Discussion posts grouped by forum, oldest first within each forum.
+
+    Threading is flattened: each message keeps its own subject, which is what
+    carries the thread it belongs to.
+    """
+    sections: list[tuple[str, list[Post]]] = []
+    forums = bb.discussions(course_id)
+    for forum in tqdm(forums, desc="    discussions", unit="forum", leave=False):
+        posts = []
+        messages = bb.discussion_messages(course_id, forum["id"])
+        for message in sorted(messages, key=lambda m: m.get("created", "")):
+            if not _in_window(message, "created", since_days):
+                continue
+            if instructors_only and _author(message, roster).get("role") not in INSTRUCTOR_ROLES:
+                continue
+            posts.append(
+                Post(
+                    title=message.get("subject") or "(no subject)",
+                    byline=_byline(message, roster, "created"),
+                    body=message.get("body") or "",
+                )
+            )
+        if posts:
+            sections.append((forum.get("title") or "Discussion", posts))
+    return sections
+
+
+# Blackboard's Ultra editor emits one <pre> per line of a snippet, leaves
+# blank <pre> boxes behind when text is deleted, marks inline code as a
+# Courier <span>, and separates paragraphs with explicit <br> on top of the
+# margins they already have.
+EMPTY_PRE_RE = re.compile(r"<pre\b[^>]*>(?:\s|&nbsp;|<br\s*/?>)*</pre>", re.I)
+ADJACENT_PRE_RE = re.compile(r"</pre>\s*<pre\b[^>]*>", re.I)
+COURIER_SPAN_RE = re.compile(
+    r'<span[^>]*style="[^"]*courier[^"]*"[^>]*>(.*?)</span>', re.I | re.DOTALL
+)
+BR_RUN_RE = re.compile(r"(?:<br\s*/?>\s*){2,}", re.I)
+BLOCK_TAGS = r"p|pre|ol|ul|h[1-6]|div|table|blockquote"
+BR_BEFORE_BLOCK_RE = re.compile(rf"<br\s*/?>\s*(?=<(?:{BLOCK_TAGS})\b)", re.I)
+BR_AFTER_BLOCK_RE = re.compile(rf"(</(?:{BLOCK_TAGS})>)\s*<br\s*/?>", re.I)
+
+
+def tidy_post_body(html: str) -> str:
+    """Even out the editor's markup so a post prints like prose.
+
+    Untouched, a post with a two-line command prints as two separate one-line
+    grey boxes with a blank third box under them.
+    """
+    html = EMPTY_PRE_RE.sub("", html)
+    # After the blank ones go, the real snippet lines are adjacent: join them
+    # into a single block rather than a stack of boxes.
+    html = ADJACENT_PRE_RE.sub("\n", html)
+    html = COURIER_SPAN_RE.sub(r"<code>\1</code>", html)
+    html = BR_RUN_RE.sub("<br>", html)
+    html = BR_AFTER_BLOCK_RE.sub(r"\1", html)
+    html = BR_BEFORE_BLOCK_RE.sub("", html)
+    return html
+
+
+def render_posts_html(context, heading: str, sections: list[tuple[str, list[Post]]],
+                      asset_dir: Path) -> str:
+    """One printable document from grouped posts."""
+    parts = [f"<h1>{_escape(heading)}</h1>"]
+    for group, posts in sections:
+        level = 2
+        if group:
+            parts.append(f"<h2>{_escape(group)}</h2>")
+            level = 3
+        for post in posts:
+            parts.append("<article class='post'>")
+            parts.append(f"<h{level}>{_escape(post.title)}</h{level}>")
+            if post.byline:
+                parts.append(f"<p class='meta'>{_escape(post.byline)}</p>")
+            body = inline_assets(context, tidy_post_body(post.body), asset_dir)
+            parts.append(body)
+            parts.append("</article>")
+    return _document(heading, "".join(parts))
+
+
+def build_weeks(context, bb: Blackboard, course: dict, course_dir: Path, args) -> list[Path]:
+    """One PDF per matching week of lesson material."""
+    global CURRENT_CONTEXT
+    written: list[Path] = []
+
+    # Match the wanted weeks on the shallow top-level listing first; walking
+    # the whole tree up front would pull every lesson body in the course just
+    # to throw most of them away.
+    pattern = r"\s*week\s*\d+" if args.all_weeks else rf"\s*week\s*{args.week}\b"
+    week_items = [
+        i for i in bb.top_level(course["id"]) if re.match(pattern, i["title"], re.I)
+    ]
+    if not week_items:
+        target = "any week" if args.all_weeks else f"week {args.week}"
+        print("  No matching weeks found.\n", file=sys.stderr)
+        log_error(f"{course['name']}: no section matching {target}")
+        return written
+
+    bar = tqdm(desc="    reading lessons", unit="item", leave=False)
+    weeks = bb.walk(course["id"], week_items, progress=bar)
+    bar.close()
+
+    for week in weeks:
+        print(f"  Rendering: {week.title}", file=sys.stderr)
+        CURRENT_CONTEXT = f"{course['name']} / {week.title}"
+        base = course_dir / _slug(week.title)
+
+        # One bad week shouldn't cost you the courses after it.
+        try:
+            html = render_week_html(
+                context, week, base.with_suffix("") / "files", not args.no_readings
+            )
+            path = write_pdf(context, html, base)
+        except Exception as exc:
+            print(f"    FAILED: {exc}", file=sys.stderr)
+            log_error(f"failed to build PDF: {exc.__class__.__name__}: {exc}")
+            continue
+
+        written.append(path)
+
+        size_mb = path.stat().st_size / 1_000_000
+        imgs = html.count("data:image/")
+        dead = html.count("[image not available")
+        note = f", {dead} dead links" if dead else ""
+        print(
+            f"    saved {path.name} ({size_mb:.1f} MB, {imgs} images{note})",
+            file=sys.stderr,
+        )
+
+    return written
+
+
+def build_posts(context, bb: Blackboard, course: dict, course_dir: Path, args) -> list[Path]:
+    """Announcements and/or instructor discussion posts, one PDF each."""
+    global CURRENT_CONTEXT
+    written: list[Path] = []
+    roster = bb.roster(course["id"])
+
+    instructors_only = args.discussions and not args.all_authors
+    if instructors_only and not roster:
+        # Without the roster there's no way to tell an instructor's post from a
+        # classmate's, so keep everything rather than guess and drop.
+        print("  Roster unreadable; keeping every discussion author.", file=sys.stderr)
+        log_error(
+            f"{course['name']}: roster unreadable, so discussion posts could not be "
+            "filtered to instructors -- every author was kept"
+        )
+        instructors_only = False
+
+    def emit(name: str, heading: str, sections: list[tuple[str, list[Post]]]) -> None:
+        count = sum(len(posts) for _, posts in sections)
+        if not count:
+            print(f"  No {name.lower()} to write.", file=sys.stderr)
+            return
+        base = course_dir / name
+        try:
+            html = render_posts_html(
+                context, heading, sections, base.with_suffix("") / "files"
+            )
+            path = write_pdf(context, html, base)
+        except Exception as exc:
+            print(f"    FAILED: {exc}", file=sys.stderr)
+            log_error(f"failed to build {name}: {exc.__class__.__name__}: {exc}")
+            return
+        written.append(path)
+        print(f"    saved {path.name} ({count} post(s))", file=sys.stderr)
+
+    if args.announcements:
+        CURRENT_CONTEXT = f"{course['name']} / announcements"
+        print("  Reading announcements", file=sys.stderr)
+        posts = collect_announcements(bb, course["id"], roster, args.since)
+        emit("Announcements", f"Announcements — {course['name']}", [("", posts)])
+
+    if args.discussions:
+        CURRENT_CONTEXT = f"{course['name']} / discussions"
+        print("  Reading discussion boards", file=sys.stderr)
+        sections = collect_discussions(
+            bb, course["id"], roster, args.since, instructors_only
+        )
+        label = "Instructor posts" if instructors_only else "Discussion posts"
+        emit("Discussions", f"{label} — {course['name']}", sections)
+
+    return written
 
 
 def _run() -> None:
@@ -542,14 +886,22 @@ def _run() -> None:
     ap.add_argument("--list", action="store_true", help="list courses and their sections, then exit")
     ap.add_argument("--no-readings", action="store_true",
                     help="skip the linked Required Reading pages")
+    ap.add_argument("--announcements", action="store_true",
+                    help="build a PDF of the course announcements")
+    ap.add_argument("--discussions", action="store_true",
+                    help="build a PDF of the instructors' discussion-board posts")
+    ap.add_argument("--all-authors", action="store_true",
+                    help="with --discussions, keep student posts as well")
+    ap.add_argument("--since", type=int, metavar="DAYS",
+                    help="only announcements/posts from the last DAYS days")
     args = ap.parse_args()
 
     if args.dump_raw:
         global RAW_CACHE_DIR
         RAW_CACHE_DIR = HERE / ".bb_raw"
 
-    if not args.list and not args.week and not args.all_weeks:
-        ap.error("pass --week N, --all-weeks, or --list")
+    if not any((args.list, args.week, args.all_weeks, args.announcements, args.discussions)):
+        ap.error("pass --week N, --all-weeks, --announcements, --discussions, or --list")
 
     OUT_DIR.mkdir(exist_ok=True)
     written: list[Path] = []
@@ -598,65 +950,13 @@ def _run() -> None:
 
         for course in matches:
             print(f"Course: {course['name']}", file=sys.stderr)
-
-            # Match the wanted weeks on the shallow top-level listing first;
-            # walking the whole tree up front would pull every lesson body in
-            # the course just to throw most of them away.
-            pattern = r"\s*week\s*\d+" if args.all_weeks else rf"\s*week\s*{args.week}\b"
-            week_items = [
-                i for i in bb.top_level(course["id"]) if re.match(pattern, i["title"], re.I)
-            ]
-            if not week_items:
-                target = "any week" if args.all_weeks else f"week {args.week}"
-                print("  No matching weeks found.\n", file=sys.stderr)
-                log_error(f"{course['name']}: no section matching {target}")
-                continue
-
-            bar = tqdm(desc="    reading lessons", unit="item", leave=False)
-            weeks = bb.walk(course["id"], week_items, progress=bar)
-            bar.close()
-
             course_dir = OUT_DIR / _slug(course["name"])
             course_dir.mkdir(parents=True, exist_ok=True)
 
-            for week in weeks:
-                print(f"  Rendering: {week.title}", file=sys.stderr)
-                global CURRENT_CONTEXT
-                CURRENT_CONTEXT = f"{course['name']} / {week.title}"
-                base = course_dir / _slug(week.title)
-
-                # One bad week shouldn't cost you the courses after it.
-                try:
-                    html = render_week_html(
-                        context, week, base.with_suffix("") / "files", not args.no_readings
-                    )
-                    base.with_suffix(".html").write_text(html, encoding="utf-8")
-
-                    pdf_page = context.new_page()
-                    pdf_page.set_content(html, wait_until="load")
-                    pdf_page.pdf(
-                        path=str(base.with_suffix(".pdf")),
-                        format="Letter",
-                        margin={"top": "0.7in", "bottom": "0.7in", "left": "0.8in", "right": "0.8in"},
-                        print_background=True,
-                    )
-                    pdf_page.close()
-                except Exception as exc:
-                    print(f"    FAILED: {exc}", file=sys.stderr)
-                    log_error(f"failed to build PDF: {exc.__class__.__name__}: {exc}")
-                    continue
-
-                written.append(base.with_suffix(".pdf"))
-
-                size_mb = base.with_suffix(".pdf").stat().st_size / 1_000_000
-                imgs = html.count("data:image/")
-                dead = html.count("[image not available")
-                note = f", {dead} dead links" if dead else ""
-                print(
-                    f"    saved {base.with_suffix('.pdf').name} "
-                    f"({size_mb:.1f} MB, {imgs} images{note})",
-                    file=sys.stderr,
-                )
+            if args.week or args.all_weeks:
+                written.extend(build_weeks(context, bb, course, course_dir, args))
+            if args.announcements or args.discussions:
+                written.extend(build_posts(context, bb, course, course_dir, args))
 
         context.close()
 
