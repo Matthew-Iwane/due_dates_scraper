@@ -37,6 +37,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from html import escape as _escape
 from html import unescape as html_unescape
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -314,10 +315,6 @@ SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.
 TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _unescape(text: str) -> str:
-    return text.replace("&quot;", '"').replace("&amp;", "&")
-
-
 HEADING_RE = re.compile(r"<h[1-6][^>]*>(.*?)</h[1-6]>", re.DOTALL | re.I)
 LINK_RE = re.compile(r'<a[^>]*href="\s*([^"]+?)\s*"[^>]*>(.*?)</a>', re.DOTALL | re.I)
 READING_HEADING_RE = re.compile(r"required\s+reading", re.I)
@@ -343,11 +340,11 @@ def find_reading_links(body: str) -> list[tuple[str, str]]:
         section = body[heading.end(): next_heading.start() if next_heading else len(body)]
 
         for url, label in LINK_RE.findall(section):
-            url = _unescape(url).strip()
+            url = html_unescape(url).strip()
             host = urlparse(url).netloc.lower()
             if not url.startswith("http") or any(s in host for s in READING_SKIP_HOSTS):
                 continue
-            text = re.sub(r"\s+", " ", TAG_RE.sub(" ", label)).strip()
+            text = re.sub(r"\s+", " ", html_unescape(TAG_RE.sub(" ", label))).strip()
             found.append((url, text or url))
     return found
 
@@ -356,10 +353,6 @@ DROP_BLOCKS_RE = re.compile(
     r"<(script|style|nav|header|footer|aside)\b[^>]*>.*?</\1>", re.DOTALL | re.I
 )
 BLOCK_END_RE = re.compile(r"</(p|div|li|h[1-6]|tr|pre|blockquote)>|<br\s*/?>", re.I)
-
-
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def readable_paragraphs(raw: str) -> list[str]:
@@ -416,7 +409,7 @@ def html_to_text(raw: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) < 40:
         return ""
-    return f"<p>{text}</p>"
+    return f"<p>{_escape(text)}</p>"
 
 
 def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
@@ -438,7 +431,7 @@ def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
         bbfile = BBFILE_RE.search(attrs)
         if bbfile:
             try:
-                meta = json.loads(_unescape(bbfile.group(1)))
+                meta = json.loads(html_unescape(bbfile.group(1)))
             except json.JSONDecodeError:
                 meta = {}
 
@@ -449,9 +442,9 @@ def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
         # first, then bare: the signature carries an expiry, but the bare path
         # is served fine to a logged-in session.
         signed = [
-            _unescape(u).strip()
+            html_unescape(u).strip()
             for u in (meta.get("resourceUrl", ""), href.group(1) if href else "")
-            if _unescape(u).strip()
+            if html_unescape(u).strip()
         ]
         candidates: list[str] = []
         for candidate in signed + [u.split("?")[0] for u in signed]:
@@ -490,7 +483,7 @@ def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
 
         if mime.startswith("image/"):
             b64 = base64.b64encode(data).decode()
-            return f'<img src="data:{mime};base64,{b64}" alt="{name}" />'
+            return f'<img src="data:{mime};base64,{b64}" alt="{_escape(name)}" />'
 
         # Embedded HTML widgets (BU page furniture, mostly). Printing the
         # source would dump stylesheets and scripts into the PDF, so keep only
@@ -500,8 +493,7 @@ def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
 
         if mime.startswith("text/") or name.endswith(SOURCE_SUFFIXES):
             code = data.decode("utf-8", errors="replace")
-            escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            return f"<h5>{name}</h5><pre><code>{escaped}</code></pre>"
+            return f"<h5>{_escape(name)}</h5><pre><code>{_escape(code)}</code></pre>"
 
         # Anything else (PDFs, slide decks) gets saved beside the week's PDF
         # so it can be uploaded to NotebookLM as its own source.
@@ -564,11 +556,12 @@ def render_week_html(context, week: Node, asset_dir: Path, with_readings: bool =
         # "ultraDocumentBody" is Blackboard's internal name for the body of the
         # folder above it, so the parent's title is the meaningful heading.
         if node.title and node.title != "ultraDocumentBody":
-            parts.append(f"<h{min(level, 6)}>{node.title}</h{min(level, 6)}>")
+            tag = f"h{min(level, 6)}"
+            parts.append(f"<{tag}>{_escape(node.title)}</{tag}>")
         if node.body:
             parts.append(inline_assets(context, node.body, asset_dir, bar))
         if node.file_name:
-            parts.append(f"<p><em>[file attached in Blackboard: {node.file_name}]</em></p>")
+            parts.append(f"<p><em>[file attached in Blackboard: {_escape(node.file_name)}]</em></p>")
         for child in node.children:
             emit(child, level + 1)
 
@@ -980,7 +973,6 @@ def _run() -> None:
         except Exception as exc:
             print(f"Drive upload failed: {exc}", file=sys.stderr)
             log_error(f"Drive upload failed: {exc}")
-
 
 
 def main() -> None:

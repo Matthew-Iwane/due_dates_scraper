@@ -3,6 +3,48 @@
 Pulls live assignment due dates from Gradescope and Blackboard into one
 sorted HTML page, with every date shown in US Eastern and Japan time.
 
+## Command reference
+
+Activate the virtual environment first (once per terminal session):
+
+```
+source .venv/bin/activate
+```
+
+**`due_dates.py`**: due-date dashboard, written to `due_dates.html`
+
+| Command | What it does |
+| --- | --- |
+| `python due_dates.py` | Fetch Gradescope + Blackboard due dates and write the page |
+| `python due_dates.py --inspect-bb` | Print raw fields of the first few Blackboard calendar events |
+
+**`bb_materials.py`**: Blackboard lessons and posts as PDFs in `bb_materials/`
+
+You need `--week`, `--all-weeks`, `--announcements`, `--discussions`, or `--list`.
+
+| Flag | What it does |
+| --- | --- |
+| `--list` | List your courses and their sections, then exit |
+| `--course CX651 [CX698 ...]` | Course-name substrings to process (default `CX651`) |
+| `--week N` | Build the PDF for week N |
+| `--all-weeks` | Build a PDF for every week |
+| `--no-readings` | Skip the linked Required Reading pages |
+| `--announcements` | Build `Announcements.pdf` per course |
+| `--discussions` | Build `Discussions.pdf` of instructor/TA posts per course |
+| `--all-authors` | With `--discussions`, keep student posts too |
+| `--since DAYS` | Only announcements/posts from the last DAYS days |
+| `--upload-drive` | Upload the PDFs to Google Drive (needs `GDRIVE_FOLDER_ID`) |
+| `--dump-raw` | Save raw lesson HTML to `.bb_raw/` for debugging |
+| `-h`, `--help` | Print these options |
+
+```
+python bb_materials.py --list
+python bb_materials.py --course CX651 CX698 DX601 --week 3
+python bb_materials.py --course CX651 --all-weeks --no-readings
+python bb_materials.py --course CX651 --announcements --discussions --since 30
+python bb_materials.py --course CX651 --week 3 --upload-drive
+```
+
 ## 1. Install dependencies
 
 ```
@@ -63,7 +105,7 @@ get every event twice.
   applies to Gradescope; Blackboard's feed doesn't expose a clean per-course
   term to filter on, so the date window is what handles it there.
 
-## 4. Run it
+## 3. Run it
 
 ```
 python due_dates.py
@@ -92,6 +134,7 @@ python bb_materials.py --list                               # see courses + sect
 python bb_materials.py --course CX651 CX698 DX601 --week 3  # all three, one login
 python bb_materials.py --course CX651 --all-weeks
 python bb_materials.py --course CX651 --week 3 --upload-drive
+python bb_materials.py --course CX651 --announcements --discussions
 ```
 
 The linked **Required Reading** pages (open-access textbook chapters, man
@@ -136,6 +179,44 @@ own file, so it can be uploaded to NotebookLM separately.
 
 Occasional `[could not fetch: ... (HTTP 404)]` markers in the output are dead
 image references in the course itself, not a failure on this end.
+
+## Announcements and instructor posts
+
+Same script, same login, different endpoints:
+
+```
+python bb_materials.py --course CX651 --announcements
+python bb_materials.py --course CX651 --announcements --discussions --since 30
+python bb_materials.py --course CX651 --week 3 --announcements   # both in one run
+```
+
+`--announcements` writes `Announcements.pdf` per course; `--discussions` writes
+`Discussions.pdf`. They're separate from the week PDFs because announcements
+and posts are timestamped rather than filed under a week, so there's no honest
+way to decide which week's document they belong in. `--since DAYS` trims both
+to recent items, which is what you want once a course has a semester of
+backlog. Each post carries a byline with its timestamp (US Eastern), author
+name, and course role.
+
+`--discussions` keeps only posts written by an Instructor or Teaching
+Assistant, since student replies are mostly noise for revision; pass
+`--all-authors` to keep the whole thread. Working out who's an instructor needs
+the course roster, which not every school lets a student account read — if it
+can't be read, every author is kept and a line saying so goes in
+`bb_materials_errors.log` rather than silently dropping posts.
+
+Posts are separated by a rule, and Blackboard's editor markup is tidied on
+the way in: it emits one `<pre>` per line of a snippet (so a two-line command
+printed as two separate grey boxes), leaves blank `<pre>` boxes behind, marks
+inline code as a Courier `<span>`, and adds explicit `<br>` on top of margins
+paragraphs already have. `tidy_post_body()` in `bb_materials.py` undoes those
+four things; the post's own words are untouched. Week PDFs don't go through it
+— the lesson pages don't have the same problem.
+
+Both features depend on endpoints your school can disable per course. A
+missing one logs `HTTP 404`/`403` with the URL in the error log and produces
+no PDF for that course, instead of an empty document. Announcements are
+reliable; discussions vary more, so check the log the first time you run it.
 
 For `--upload-drive`, see the setup steps at the top of `drive_upload.py`
 (Google Cloud project, Drive API, OAuth desktop credentials) and set

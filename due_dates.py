@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from html import escape
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -51,7 +52,7 @@ class DueItem:
     source: str  # "Gradescope" or "Blackboard"
     course: str
     title: str
-    due_utc: datetime | None  # always timezone-aware (UTC) once set
+    due_utc: datetime  # timezone-aware, UTC
 
 
 def _parse_gradescope_dt(raw: str) -> datetime | None:
@@ -219,7 +220,7 @@ def filter_window(items: list[DueItem], now: datetime) -> list[DueItem]:
     """
     lower = now - timedelta(days=DAYS_BEHIND)
     upper = now + timedelta(days=DAYS_AHEAD)
-    return [i for i in items if i.due_utc and lower <= i.due_utc <= upper]
+    return [i for i in items if lower <= i.due_utc <= upper]
 
 
 TYPE_SLUGS = {
@@ -242,8 +243,7 @@ def _classify_type(title: str, source: str) -> str:
 
 
 def render_html(items: list[DueItem]) -> str:
-    items = [i for i in items if i.due_utc is not None]
-    items.sort(key=lambda i: i.due_utc)
+    items = sorted(items, key=lambda i: i.due_utc)
     now = datetime.now(timezone.utc)
 
     rows = []
@@ -266,8 +266,8 @@ def render_html(items: list[DueItem]) -> str:
 
         rows.append(
             f'<tr class="{urgency_class} {type_slug}">'
-            f"<td>{i.source}</td><td>{i.course}</td>"
-            f'<td><span class="badge {type_slug}">{item_type}</span>{i.title}</td>'
+            f"<td>{i.source}</td><td>{escape(i.course)}</td>"
+            f'<td><span class="badge {type_slug}">{item_type}</span>{escape(i.title)}</td>'
             f'<td class="due">{est} EST</td><td class="due">{jst} JST</td></tr>'
         )
 
