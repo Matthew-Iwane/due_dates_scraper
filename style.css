@@ -80,29 +80,29 @@ tr.type-live-session {
 }
 
 tr.type-quiz {
-  border-left: 4px solid #f4c542;
+  border-left: 4px solid #f87171;
 }
 
 .badge.type-quiz {
-  background: #f4c54226;
-  color: #f4c542;
+  background: #f8717126;
+  color: #f87171;
 }
 
 .dot.type-quiz {
-  background: #f4c542;
+  background: #f87171;
 }
 
 tr.type-assignment {
-  border-left: 4px solid #4fd1c5;
+  border-left: 4px solid #60a5fa;
 }
 
 .badge.type-assignment {
-  background: #4fd1c526;
-  color: #4fd1c5;
+  background: #60a5fa26;
+  color: #60a5fa;
 }
 
 .dot.type-assignment {
-  background: #4fd1c5;
+  background: #60a5fa;
 }
 
 tr.type-task {
