@@ -31,6 +31,11 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 
 def _service():
+    """An authenticated Drive client.
+
+    Reuses the cached token, refreshing it if expired; only falls back to the
+    browser consent flow when there's no usable token at all.
+    """
     creds = None
     if TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
@@ -61,6 +66,8 @@ def upload(paths: list[Path], folder_id: str) -> None:
             .execute()
             .get("files", [])
         )
+        # Overwrite in place if the file already exists, so Drive (and
+        # NotebookLM) keeps one copy per week instead of piling up duplicates.
         media = MediaFileUpload(str(path), resumable=True)
 
         if existing:

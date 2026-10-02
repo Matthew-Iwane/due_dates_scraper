@@ -70,6 +70,8 @@ FILE_HANDLER = "resource/x-bb-file"
 
 @dataclass
 class Node:
+    """One item in a course's content tree (week folder, lesson, file...)."""
+
     id: str
     title: str
     handler: str
@@ -79,6 +81,7 @@ class Node:
 
 
 def _slug(text: str) -> str:
+    """Make text safe to use as a file or folder name."""
     # \s+ rather than " " so non-breaking spaces (Blackboard course names
     # have them) don't survive into filenames.
     cleaned = re.sub(r"[^\w\s-]", "", text)
@@ -86,10 +89,17 @@ def _slug(text: str) -> str:
 
 
 class Blackboard:
+    """Thin wrapper over Blackboard's public REST API.
+
+    Requests run *inside* the logged-in browser page (via fetch), so they
+    reuse its SSO cookies -- no API key or token handling needed.
+    """
+
     def __init__(self, page):
         self.page = page
 
     def api_get(self, url: str, note: str = ""):
+        """GET a JSON endpoint; None on any non-200 or unparseable reply."""
         res = self.page.evaluate(
             """async (url) => {
                 const r = await fetch(url, {credentials: 'include'});
@@ -111,6 +121,7 @@ class Blackboard:
             return None
 
     def courses(self) -> list[dict]:
+        """Every course you're enrolled in, as {id, name}."""
         data = self.api_get(f"{API}/users/me/courses?expand=course&limit=100")
         out = []
         for m in (data or {}).get("results", []):
@@ -124,6 +135,7 @@ class Blackboard:
         return (data or {}).get("results", [])
 
     def top_level(self, course_id: str) -> list[dict]:
+        """The course's top-level content (usually one folder per week)."""
         data = self.api_get(f"{API}/courses/{course_id}/contents")
         return (data or {}).get("results", [])
 
@@ -396,6 +408,7 @@ def fetch_reading(url: str, label: str, asset_dir: Path) -> str:
 
 
 def collect_reading_links(node: Node) -> list[tuple[str, str]]:
+    """Required-reading links from a node and everything under it."""
     links = find_reading_links(node.body)
     for child in node.children:
         links.extend(collect_reading_links(child))
@@ -514,9 +527,11 @@ def _ext_for(mime: str) -> str:
 
 
 def count_assets(node: Node) -> int:
+    """How many attachments a tree holds; sizes the progress bar."""
     return len(ASSET_TAG_RE.findall(node.body)) + sum(count_assets(c) for c in node.children)
 
 
+# Print styling shared by every generated PDF.
 DOC_CSS = """
   body { font-family: Georgia, 'Times New Roman', serif; line-height: 1.6;
          max-width: 50em; margin: 2em auto; color: #111; }
@@ -614,6 +629,8 @@ INSTRUCTOR_ROLES = {"Instructor", "TeachingAssistant"}
 
 @dataclass
 class Post:
+    """An announcement or discussion message, ready to render."""
+
     title: str
     byline: str
     body: str
@@ -642,6 +659,7 @@ def _author(entry: dict, roster: dict[str, dict]) -> dict:
 
 
 def _byline(entry: dict, roster: dict[str, dict], when_field: str) -> str:
+    """'date · author · role' line shown under a post's title."""
     who = _author(entry, roster)
     stamp = _when(entry.get(when_field, ""))
     bits = [
@@ -653,6 +671,7 @@ def _byline(entry: dict, roster: dict[str, dict], when_field: str) -> str:
 
 
 def _in_window(entry: dict, when_field: str, since_days: int | None) -> bool:
+    """Whether a post falls within --since DAYS (always true without it)."""
     if since_days is None:
         return True
     stamp = _when(entry.get(when_field, ""))
@@ -865,6 +884,13 @@ def build_posts(context, bb: Blackboard, course: dict, course_dir: Path, args) -
 
 
 def _run() -> None:
+    """Parse args, log in, then build the requested PDFs for each course.
+
+    Order: launch a visible Chrome with a saved profile -> log in -> resolve
+    --course substrings to real courses -> per course, write week PDFs and/or
+    announcement/discussion PDFs into bb_materials/<course>/ -> optionally
+    push everything written to Google Drive.
+    """
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--course",
@@ -976,6 +1002,7 @@ def _run() -> None:
 
 
 def main() -> None:
+    """Run, and always write the error log -- recording how the run ended."""
     global OUTCOME, CRASH_DETAIL
     try:
         _run()

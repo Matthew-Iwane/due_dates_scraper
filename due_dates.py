@@ -1,3 +1,15 @@
+"""Build due_dates.html: one table of upcoming deadlines from every source.
+
+Flow: fetch unsubmitted Gradescope assignments (via the gradescope package)
+and Blackboard calendar events (via ICS feed URLs), normalize everything to
+UTC DueItems, keep only those inside the DAYS_BEHIND/DAYS_AHEAD window, then
+render a sorted HTML table showing each due time in Eastern and Tokyo time.
+
+Usage:
+    python due_dates.py              # write due_dates.html
+    python due_dates.py --inspect-bb # print raw sample events from each feed
+"""
+
 from __future__ import annotations
 
 import json
@@ -38,6 +50,7 @@ def _load_dotenv(path: Path = HERE / ".env") -> None:
 
 _load_dotenv()
 
+# All config comes from .env (see .env.example).
 GS_EMAIL = os.environ.get("GS_EMAIL")
 GS_PASSWORD = os.environ.get("GS_PASSWORD")
 BB_ICS_URL = os.environ.get("BB_ICS_URL")
@@ -49,6 +62,8 @@ DAYS_BEHIND = int(os.environ.get("DAYS_BEHIND", "1"))
 
 @dataclass
 class DueItem:
+    """One deadline, from either source, in a common shape."""
+
     source: str  # "Gradescope" or "Blackboard"
     course: str
     title: str
@@ -105,6 +120,7 @@ def _extract_bb_title(component) -> str:
 
 
 def _extract_bb_course(component) -> str:
+    """Course name from an event's CATEGORIES field, if Blackboard set one."""
     cats = component.get("categories")
     if cats is not None:
         try:
@@ -117,6 +133,10 @@ def _extract_bb_course(component) -> str:
 
 
 def fetch_gradescope() -> list[DueItem]:
+    """Every unsubmitted, dated assignment across your Gradescope courses.
+
+    GS_TERM, if set, limits this to courses whose term contains that text.
+    """
     if not GS_EMAIL or not GS_PASSWORD:
         print("Skipping Gradescope: set GS_EMAIL and GS_PASSWORD.", file=sys.stderr)
         return []
@@ -169,6 +189,11 @@ def _bb_feeds() -> list[tuple[str | None, str]]:
 
 
 def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
+    """Download each Blackboard ICS feed and turn its events into DueItems.
+
+    With inspect_only, prints a few raw events per feed instead, which is
+    handy for seeing what fields Blackboard actually fills in.
+    """
     feeds = _bb_feeds()
     if not feeds:
         print("Skipping Blackboard: set BB_ICS_URL or BB_ICS_URLS.", file=sys.stderr)
@@ -223,6 +248,7 @@ def filter_window(items: list[DueItem], now: datetime) -> list[DueItem]:
     return [i for i in items if lower <= i.due_utc <= upper]
 
 
+# Item type -> CSS class used for its row colour and badge in style.css.
 TYPE_SLUGS = {
     "Live Session": "type-live-session",
     "Quiz": "type-quiz",
@@ -232,6 +258,7 @@ TYPE_SLUGS = {
 
 
 def _classify_type(title: str, source: str) -> str:
+    """Guess an item's type from keywords in its title."""
     t = title.lower()
     if "live session" in t:
         return "Live Session"
@@ -243,6 +270,11 @@ def _classify_type(title: str, source: str) -> str:
 
 
 def render_html(items: list[DueItem]) -> str:
+    """The full due_dates.html page, soonest first.
+
+    Each row gets an urgency class (overdue / due within 24h / within 3 days)
+    and a type class, which style.css uses to colour it.
+    """
     items = sorted(items, key=lambda i: i.due_utc)
     now = datetime.now(timezone.utc)
 
