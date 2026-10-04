@@ -93,6 +93,9 @@ class Blackboard:
 
     Requests run *inside* the logged-in browser page (via fetch), so they
     reuse its SSO cookies -- no API key or token handling needed.
+
+    Read-only on purpose: GET is the only method here, so nothing can start a
+    quiz attempt, submit, post, or change anything in a course. Keep it that way.
     """
 
     def __init__(self, page):
@@ -102,7 +105,7 @@ class Blackboard:
         """GET a JSON endpoint; None on any non-200 or unparseable reply."""
         res = self.page.evaluate(
             """async (url) => {
-                const r = await fetch(url, {credentials: 'include'});
+                const r = await fetch(url, {method: 'GET', credentials: 'include'});
                 return {status: r.status, body: await r.text()};
             }""",
             url,
@@ -278,6 +281,12 @@ def login(page, timeout_ms: int = 5 * 60 * 1000) -> bool:
 ASSET_TAG_RE = re.compile(r'<a([^>]*data-bbfile="[^"]*"[^>]*)>.*?</a>', re.DOTALL)
 HREF_RE = re.compile(r'href="([^"]*)"')
 BBFILE_RE = re.compile(r'data-bbfile="([^"]*)"')
+# "Check Your Knowledge" practice questions aren't in the lesson body: it only
+# holds an empty placeholder div pointing at a separate knowledge-check item,
+# whose questions live behind Blackboard's assessment endpoints. Those aren't
+# fetched, so the PDF says where each question was instead of leaving a gap.
+KNOWLEDGE_CHECK_RE = re.compile(r'<div[^>]*data-content-link-type="knowledgeCheck"[^>]*>\s*</div>')
+KNOWLEDGE_CHECK_NOTE = "<p><em>[practice question not included: answer it in Blackboard]</em></p>"
 
 
 ERROR_LOG = HERE / "bb_materials_errors.log"
@@ -574,7 +583,8 @@ def render_week_html(context, week: Node, asset_dir: Path, with_readings: bool =
             tag = f"h{min(level, 6)}"
             parts.append(f"<{tag}>{_escape(node.title)}</{tag}>")
         if node.body:
-            parts.append(inline_assets(context, node.body, asset_dir, bar))
+            body = KNOWLEDGE_CHECK_RE.sub(KNOWLEDGE_CHECK_NOTE, node.body)
+            parts.append(inline_assets(context, body, asset_dir, bar))
         if node.file_name:
             parts.append(f"<p><em>[file attached in Blackboard: {_escape(node.file_name)}]</em></p>")
         for child in node.children:

@@ -8,7 +8,13 @@ body {
 table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed; /* same column widths in both sections, so they line up */
 }
+
+th:nth-child(1) { width: 8rem; }
+th:nth-child(2) { width: 10rem; }
+th:nth-child(4),
+th:nth-child(5) { width: 13.5rem; }
 
 th,
 td {
@@ -27,6 +33,22 @@ th {
 h1 {
   font-size: 1.3rem;
   margin-bottom: 0.25rem;
+}
+
+h2 {
+  font-size: 0.95rem;
+  color: #c3cad6;
+  margin: 2rem 0 0.5rem;
+}
+
+td.empty {
+  color: #7d8698;
+}
+
+p.note {
+  color: #7d8698;
+  font-size: 0.8rem;
+  margin: -0.25rem 0 0.75rem;
 }
 
 .updated {
@@ -71,7 +93,7 @@ tr.type-live-session {
 }
 
 .badge.type-live-session {
-  background: #a78bfa26;
+  background: #a78bfa33;
   color: #a78bfa;
 }
 
@@ -80,46 +102,47 @@ tr.type-live-session {
 }
 
 tr.type-quiz {
-  border-left: 4px solid #f87171;
+  border-left: 4px solid #ff4d5e;
 }
 
 .badge.type-quiz {
-  background: #f8717126;
-  color: #f87171;
+  background: #ff4d5e33;
+  color: #ff4d5e;
 }
 
 .dot.type-quiz {
-  background: #f87171;
+  background: #ff4d5e;
 }
 
 tr.type-assignment {
-  border-left: 4px solid #60a5fa;
+  border-left: 4px solid #3db2ff;
 }
 
 .badge.type-assignment {
-  background: #60a5fa26;
-  color: #60a5fa;
+  background: #3db2ff33;
+  color: #3db2ff;
 }
 
 .dot.type-assignment {
-  background: #60a5fa;
+  background: #3db2ff;
 }
 
-tr.type-task {
+tr.type-event {
   border-left: 4px solid #9aa4b2;
 }
 
-.badge.type-task {
-  background: #9aa4b226;
+.badge.type-event {
+  background: #9aa4b233;
   color: #9aa4b2;
 }
 
-.dot.type-task {
+.dot.type-event {
   background: #9aa4b2;
 }
 
 /* -- due-date urgency -- */
 td.due {
+  white-space: nowrap;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -136,4 +159,13 @@ tr.due-soon td.due {
 
 tr.due-upcoming td.due {
   color: #f4d35e;
+}
+/* -- where to submit -- */
+td.source-gradescope {
+  color: #2dd4bf;
+  font-weight: 600;
+}
+
+td.source-blackboard {
+  color: #c3cad6;
 }

@@ -2,8 +2,10 @@
 
 Flow: fetch unsubmitted Gradescope assignments (via the gradescope package)
 and Blackboard calendar events (via ICS feed URLs), normalize everything to
-UTC DueItems, keep only those inside the DAYS_BEHIND/DAYS_AHEAD window, then
-render a sorted HTML table showing each due time in Eastern and Tokyo time.
+UTC DueItems, drop Blackboard's copies of Gradescope assignments and anything
+already submitted, keep only those inside the DAYS_BEHIND/DAYS_AHEAD window,
+then render two sorted HTML tables (things to submit, everything else) showing
+each due time in Eastern and Tokyo time.
 
 Usage:
     python due_dates.py              # write due_dates.html
@@ -68,6 +70,8 @@ class DueItem:
     course: str
     title: str
     due_utc: datetime  # timezone-aware, UTC
+    gradable: bool = True  # something to submit; False for live sessions, reminders, breaks
+    submitted: bool = False
 
 
 def _parse_gradescope_dt(raw: str) -> datetime | None:
@@ -133,8 +137,10 @@ def _extract_bb_course(component) -> str:
 
 
 def fetch_gradescope() -> list[DueItem]:
-    """Every unsubmitted, dated assignment across your Gradescope courses.
+    """Every dated assignment across your Gradescope courses.
 
+    Submitted ones are kept (flagged) so their Blackboard gradebook copies can
+    be matched and dropped too; main() filters them out afterwards.
     GS_TERM, if set, limits this to courses whose term contains that text.
     """
     if not GS_EMAIL or not GS_PASSWORD:
@@ -150,8 +156,6 @@ def fetch_gradescope() -> list[DueItem]:
         if GS_TERM and GS_TERM.lower() not in (course.term or "").lower():
             continue
         for a in gs.get_assignments_as_student(course):
-            if a.submitted:
-                continue
             due = _parse_gradescope_dt(a.due_date)
             if due is None:
                 continue
@@ -161,6 +165,7 @@ def fetch_gradescope() -> list[DueItem]:
                     course=course.short_name or course.full_name,
                     title=a.title,
                     due_utc=due,
+                    submitted=bool(a.submitted),
                 )
             )
     return items
@@ -214,7 +219,7 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
             print(f"=== {course_label or 'combined'} ===")
             for e in events[:5]:
                 print("---")
-                for key in ("summary", "dtstart", "dtend", "categories", "description"):
+                for key in ("summary", "uid", "dtstart", "dtend", "categories", "description"):
                     print(f"{key}: {e.get(key)}")
             continue
 
@@ -231,9 +236,39 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
                     course=course_label or _extract_bb_course(component),
                     title=_extract_bb_title(component),
                     due_utc=due,
+                    # Blackboard builds each event's UID from the record behind it:
+                    # gradebook items (real submissions) are
+                    # "_blackboard.platform.gradebook9.GradableItem-...", while
+                    # instructor-typed calendar entries (live sessions, "DUE: ..."
+                    # reminders, breaks) are "_blackboard.data.calendar.CalendarEntry-...".
+                    # If Blackboard ever changes this, items land in "Everything else"
+                    # rather than disappearing.
+                    gradable="GradableItem" in str(component.get("uid", "")),
                 )
             )
     return items
+
+
+def drop_gradescope_copies(items: list[DueItem]) -> list[DueItem]:
+    """Remove Blackboard gradebook items that mirror a Gradescope assignment.
+
+    Gradescope's Blackboard integration copies each assignment into the
+    Blackboard gradebook under the same title and due date, so it arrives in the
+    calendar feed a second time. The times differ by seconds (Gradescope says
+    23:59:00, Blackboard 23:59:59), hence the tolerance. The Gradescope copy is
+    kept since it's where you submit and it knows whether you have. Titles that
+    don't match exactly just show twice; nothing is lost.
+    """
+    gradescope_dues: dict[str, list[datetime]] = {}
+    for i in items:
+        if i.source == "Gradescope":
+            gradescope_dues.setdefault(i.title.strip().lower(), []).append(i.due_utc)
+
+    def is_copy(i: DueItem) -> bool:
+        dues = gradescope_dues.get(i.title.strip().lower(), [])
+        return i.source == "Blackboard" and any(abs(i.due_utc - d) <= timedelta(hours=1) for d in dues)
+
+    return [i for i in items if not is_copy(i)]
 
 
 def filter_window(items: list[DueItem], now: datetime) -> list[DueItem]:
@@ -250,36 +285,43 @@ def filter_window(items: list[DueItem], now: datetime) -> list[DueItem]:
 
 # Item type -> CSS class used for its row colour and badge in style.css.
 TYPE_SLUGS = {
-    "Live Session": "type-live-session",
     "Quiz": "type-quiz",
     "Assignment": "type-assignment",
-    "Task": "type-task",
+    "Live Session": "type-live-session",
+    "Event": "type-event",
 }
 
 
-def _classify_type(title: str, source: str) -> str:
-    """Guess an item's type from keywords in its title."""
-    t = title.lower()
-    if "live session" in t:
-        return "Live Session"
-    if "quiz" in t:
-        return "Quiz"
-    if "assignment" in t or source == "Gradescope":
-        return "Assignment"
-    return "Task"
+_DUE_WORD_RE = re.compile(r"\bdue\b", re.IGNORECASE)
 
 
-def render_html(items: list[DueItem]) -> str:
-    """The full due_dates.html page, soonest first.
+def _is_reminder(item: DueItem) -> bool:
+    """An instructor's calendar note about a deadline ("DUE: ASSIGNMENT 5").
+
+    These aren't the item you submit, and their titles don't line up with it
+    ("DUE: WEEKLY QUIZ" vs "Week 5 Activity: Quiz (graded)"), so they can't be
+    matched up and dropped. They're kept in their own section because they're
+    often the only heads-up for work the instructor hasn't posted yet.
+    """
+    return not item.gradable and bool(_DUE_WORD_RE.search(item.title))
+
+
+def _classify_type(item: DueItem) -> str:
+    """Quiz vs Assignment for deadlines; Live Session vs Event otherwise."""
+    t = item.title.lower()
+    if item.gradable or _is_reminder(item):
+        return "Quiz" if "quiz" in t else "Assignment"
+    return "Live Session" if "live session" in t else "Event"
+
+
+def _render_table(items: list[DueItem], now: datetime, source_header: str) -> str:
+    """One table of items, soonest first.
 
     Each row gets an urgency class (overdue / due within 24h / within 3 days)
     and a type class, which style.css uses to colour it.
     """
-    items = sorted(items, key=lambda i: i.due_utc)
-    now = datetime.now(timezone.utc)
-
     rows = []
-    for i in items:
+    for i in sorted(items, key=lambda i: i.due_utc):
         est = i.due_utc.astimezone(EASTERN).strftime("%a %b %d, %I:%M %p")
         jst = i.due_utc.astimezone(TOKYO).strftime("%a %b %d, %I:%M %p")
 
@@ -293,23 +335,37 @@ def render_html(items: list[DueItem]) -> str:
         else:
             urgency_class = ""
 
-        item_type = _classify_type(i.title, i.source)
+        item_type = _classify_type(i)
         type_slug = TYPE_SLUGS[item_type]
 
         rows.append(
             f'<tr class="{urgency_class} {type_slug}">'
-            f"<td>{i.source}</td><td>{escape(i.course)}</td>"
+            f'<td class="source source-{i.source.lower()}">{i.source}</td><td>{escape(i.course)}</td>'
             f'<td><span class="badge {type_slug}">{item_type}</span>{escape(i.title)}</td>'
             f'<td class="due">{est} EST</td><td class="due">{jst} JST</td></tr>'
         )
 
-    body_rows = "".join(rows) if rows else '<tr><td colspan="5">No due dates found.</td></tr>'
+    body_rows = "".join(rows) if rows else '<tr><td colspan="5" class="empty">Nothing here.</td></tr>'
+    return f"""<table>
+    <tr><th>{source_header}</th><th>Course</th><th>Item</th><th>Due (EST)</th><th>Due (JST)</th></tr>
+    {body_rows}
+  </table>"""
+
+
+def render_html(items: list[DueItem]) -> str:
+    """The full due_dates.html page: things to submit, deadline reminders, everything else."""
+    now = datetime.now(timezone.utc)
+    todo = _render_table([i for i in items if i.gradable], now, "Submit on")
+    reminders = _render_table([i for i in items if _is_reminder(i)], now, "Source")
+    other = _render_table(
+        [i for i in items if not i.gradable and not _is_reminder(i)], now, "Source"
+    )
     generated = datetime.now(EASTERN).strftime("%b %d, %Y %I:%M %p")
 
     legend = "".join(
         f'<span class="legend-item"><span class="dot {slug}"></span>{label}</span>'
         for label, slug in TYPE_SLUGS.items()
-        if label != "Task"
+        if label != "Event"
     )
 
     return f"""<!DOCTYPE html>
@@ -323,10 +379,15 @@ def render_html(items: list[DueItem]) -> str:
   <h1>Upcoming due dates</h1>
   <div class="updated">Generated {generated} EST</div>
   <div class="legend">{legend}</div>
-  <table>
-    <tr><th>Source</th><th>Course</th><th>Assignment</th><th>Due (EST)</th><th>Due (JST)</th></tr>
-    {body_rows}
-  </table>
+  <h2>To do</h2>
+  {todo}
+  <h2>Deadline reminders</h2>
+  <p class="note">Notes your instructors put on the Blackboard calendar. The item you
+  actually submit shows under To do once it's posted; if it isn't there yet, it
+  hasn't been posted.</p>
+  {reminders}
+  <h2>Everything else</h2>
+  {other}
 </body>
 </html>"""
 
@@ -346,6 +407,7 @@ def main() -> None:
         return
 
     items = _safe_fetch("Gradescope", fetch_gradescope) + _safe_fetch("Blackboard", fetch_blackboard)
+    items = [i for i in drop_gradescope_copies(items) if not i.submitted]
     items = filter_window(items, datetime.now(timezone.utc))
     html = render_html(items)
     out_path = HERE / "due_dates.html"

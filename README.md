@@ -1,24 +1,36 @@
-# Due dates dashboard
+# Commands
 
-Pulls live assignment due dates from Gradescope and Blackboard into one
-sorted HTML page, with every date shown in US Eastern and Japan time.
-
-## Command reference
-
-Activate the virtual environment first (once per terminal session):
+## Every new terminal
 
 ```
+cd ~/Desktop/due_dates_scraper
 source .venv/bin/activate
 ```
 
-**`due_dates.py`**: due-date dashboard, written to `due_dates.html`
+Everything below assumes the venv is active (your prompt starts with
+`(.venv)`). Without it, macOS has no `python` command (`command not found:
+python`), and the system `python3` doesn't have this repo's packages
+(`No module named 'playwright'`). If you'd rather not activate, swap
+`python` for `.venv/bin/python` in any command below.
+
+## One-time setup
+
+```
+python3 -m venv .venv               # create the venv (skip if .venv/ exists)
+source .venv/bin/activate
+pip install -r requirements.txt     # Python packages
+playwright install chromium         # browser bb_materials.py drives
+cp .env.example .env                # then fill in your values
+```
+
+## `due_dates.py`: due-date dashboard, written to `due_dates.html`
 
 | Command | What it does |
 | --- | --- |
 | `python due_dates.py` | Fetch Gradescope + Blackboard due dates and write the page |
 | `python due_dates.py --inspect-bb` | Print raw fields of the first few Blackboard calendar events |
 
-**`bb_materials.py`**: Blackboard lessons and posts as PDFs in `bb_materials/`
+## `bb_materials.py`: Blackboard lessons and posts as PDFs in `bb_materials/`
 
 You need `--week`, `--all-weeks`, `--announcements`, `--discussions`, or `--list`.
 
@@ -45,11 +57,14 @@ python bb_materials.py --course CX651 --announcements --discussions --since 30
 python bb_materials.py --course CX651 --week 3 --upload-drive
 ```
 
+# Due dates dashboard
+
+Pulls live assignment due dates from Gradescope and Blackboard into one
+sorted HTML page, with every date shown in US Eastern and Japan time.
+
 ## 1. Install dependencies
 
-```
-pip install -r requirements.txt
-```
+Run the one-time setup commands at the top of this file.
 
 `gradescope-tool` is an unofficial, community-maintained library (not made
 by Gradescope). It logs in with your real credentials the same way the
@@ -180,6 +195,13 @@ own file, so it can be uploaded to NotebookLM separately.
 Occasional `[could not fetch: ... (HTTP 404)]` markers in the output are dead
 image references in the course itself, not a failure on this end.
 
+The "Check Your Knowledge" practice questions at the end of each lesson are
+**not** in the PDF. They're stored as separate knowledge-check items, not in
+the lesson text, so each one shows as `[practice question not included:
+answer it in Blackboard]`. The script is read-only: it only sends GET
+requests, and never opens quizzes, tests, or knowledge checks, so it can't
+start an attempt or submit anything.
+
 ## Announcements and instructor posts
 
 Same script, same login, different endpoints:
@@ -230,8 +252,25 @@ by hand — for one file a week that's honestly less work than the OAuth setup.
   Gradescope courses use a timezone other than US Eastern; check one date
   against the Gradescope site directly and adjust `EASTERN` at the top of
   `due_dates.py` if needed.
-- Submitted Gradescope assignments are skipped, so the list stays focused
-  on what's actually still due.
+- The page has three sections. **To do** is anything you submit: Gradescope
+  assignments, plus Blackboard gradebook items (quizzes, case studies).
+  **Deadline reminders** are notes instructors typed onto the Blackboard
+  calendar ("DUE: ASSIGNMENT 5"); the real item appears under To do once it's
+  posted, so a reminder with no match there means it isn't posted yet.
+  **Everything else** is the rest of the calendar: live sessions, breaks.
+  To do vs the rest comes from each Blackboard event's UID, which names the
+  record behind it (`GradableItem` vs `CalendarEntry`). A calendar entry
+  counts as a reminder if its title has the word "due"; if an instructor
+  words one differently it lands in Everything else, still visible.
+- The **Submit on** column says where the work goes. Gradescope's Blackboard
+  integration copies every Gradescope assignment into the Blackboard
+  gradebook, so the same assignment shows up in both feeds; the Blackboard
+  copy is dropped when its title matches a Gradescope assignment due within
+  the same hour.
+- Submitted Gradescope assignments (and their Blackboard copies) are skipped,
+  so the list stays focused on what's actually still due. Blackboard's feed
+  doesn't say whether you've submitted, so Blackboard items stay until their
+  due date passes.
 - All-day Blackboard events (no specific time) show as midnight in both
   columns since no time is attached.
 - Progress bars (via `tqdm`) print to the terminal while fetching Gradescope
