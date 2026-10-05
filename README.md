@@ -23,11 +23,11 @@ playwright install chromium         # browser bb_materials.py drives
 cp .env.example .env                # then fill in your values
 ```
 
-## `due_dates.py`: due-date dashboard, written to `due_dates.html`
+## `due_dates.py`: due-date dashboard, written to `due_dates/`
 
 | Command | What it does |
 | --- | --- |
-| `python due_dates.py` | Fetch Gradescope + Blackboard due dates and write the page |
+| `python due_dates.py` | Fetch Gradescope + Blackboard due dates; write `due_dates/due_dates.html` plus a dated HTML and PDF |
 | `python due_dates.py --inspect-bb` | Print raw fields of the first few Blackboard calendar events |
 
 ## `bb_materials.py`: Blackboard lessons and posts as PDFs in `bb_materials/`
@@ -275,8 +275,15 @@ by hand — for one file a week that's honestly less work than the OAuth setup.
   columns since no time is attached.
 - Progress bars (via `tqdm`) print to the terminal while fetching Gradescope
   courses and the Blackboard calendar, so a slow run doesn't look hung.
-- Styling for `due_dates.html` lives in `style.css`, generated alongside it;
-  `due_dates.py` only emits class names, so tweak colors/layout there.
+- Output lands in `due_dates/`: `due_dates.html` is always the latest
+  dashboard, and each run also saves `due_dates_YYYY-MM-DD.html` and `.pdf`
+  (one pair per day, rerunning the same day overwrites it) so older snapshots
+  stick around. The
+  PDF uses the same Chromium as `bb_materials.py`; if it can't launch, the
+  HTML is still written and a warning is printed.
+- Styling lives in `style.css`; `due_dates.py` only emits class names and
+  inlines the stylesheet into the page on each run, so tweak colors/layout
+  there and rerun.
 
 
   NOTE:

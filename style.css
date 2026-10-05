@@ -16,6 +16,11 @@ th:nth-child(2) { width: 10rem; }
 th:nth-child(4),
 th:nth-child(5) { width: 13.5rem; }
 
+/* In the PDF, don't split a row across pages. */
+tr {
+  break-inside: avoid;
+}
+
 th,
 td {
   padding: 0.6rem 0.8rem;

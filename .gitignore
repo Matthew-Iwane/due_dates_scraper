@@ -27,7 +27,8 @@ __pycache__/
 # OS cruft
 .DS_Store
 
-# Due Dates HTML file (changes every time)
+# Due-date dashboard output (changes every run): latest HTML + dated PDFs
+due_dates/
 due_dates.html
 
 # Raw lesson HTML cache (debugging)

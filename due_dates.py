@@ -1,4 +1,4 @@
-"""Build due_dates.html: one table of upcoming deadlines from every source.
+"""Build the due-date dashboard: one table of upcoming deadlines from every source.
 
 Flow: fetch unsubmitted Gradescope assignments (via the gradescope package)
 and Blackboard calendar events (via ICS feed URLs), normalize everything to
@@ -7,8 +7,12 @@ already submitted, keep only those inside the DAYS_BEHIND/DAYS_AHEAD window,
 then render two sorted HTML tables (things to submit, everything else) showing
 each due time in Eastern and Tokyo time.
 
+Output goes to due_dates/: due_dates.html is always the latest dashboard, and
+each run also saves a dated copy as both HTML and PDF
+(due_dates_YYYY-MM-DD.html / .pdf) so past days stay around.
+
 Usage:
-    python due_dates.py              # write due_dates.html
+    python due_dates.py              # write due_dates/ html + pdf
     python due_dates.py --inspect-bb # print raw sample events from each feed
 """
 
@@ -32,6 +36,7 @@ EASTERN = ZoneInfo("America/New_York")
 TOKYO = ZoneInfo("Asia/Tokyo")
 
 HERE = Path(__file__).parent
+OUT_DIR = HERE / "due_dates"
 
 # Silence tqdm's progress bars when output isn't a terminal (e.g. cron
 # redirected to a log file), so the log doesn't fill up with carriage returns.
@@ -353,7 +358,11 @@ def _render_table(items: list[DueItem], now: datetime, source_header: str) -> st
 
 
 def render_html(items: list[DueItem]) -> str:
-    """The full due_dates.html page: things to submit, deadline reminders, everything else."""
+    """The full dashboard page: things to submit, deadline reminders, everything else.
+
+    style.css is inlined rather than linked so the page renders the same from
+    due_dates/ and when printed to PDF.
+    """
     now = datetime.now(timezone.utc)
     todo = _render_table([i for i in items if i.gradable], now, "Submit on")
     reminders = _render_table([i for i in items if _is_reminder(i)], now, "Source")
@@ -373,7 +382,9 @@ def render_html(items: list[DueItem]) -> str:
 <head>
 <meta charset="utf-8">
 <title>Due dates</title>
-<link rel="stylesheet" href="style.css">
+<style>
+{(HERE / "style.css").read_text(encoding="utf-8")}
+</style>
 </head>
 <body>
   <h1>Upcoming due dates</h1>
@@ -390,6 +401,23 @@ def render_html(items: list[DueItem]) -> str:
   {other}
 </body>
 </html>"""
+
+
+def write_pdf(html: str, pdf_path: Path) -> None:
+    """Print the dashboard to a landscape PDF with headless Chromium.
+
+    Landscape because the five fixed-width columns leave the Item column
+    almost no room on a portrait page. No page margins, so the dark background
+    runs to the edge; body's own margin in style.css provides the padding.
+    """
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.set_content(html, wait_until="load")
+        page.pdf(path=str(pdf_path), format="Letter", landscape=True, print_background=True)
+        browser.close()
 
 
 def _safe_fetch(name: str, fetch) -> list[DueItem]:
@@ -410,12 +438,25 @@ def main() -> None:
     items = [i for i in drop_gradescope_copies(items) if not i.submitted]
     items = filter_window(items, datetime.now(timezone.utc))
     html = render_html(items)
-    out_path = HERE / "due_dates.html"
-    out_path.write_text(html, encoding="utf-8")
+    OUT_DIR.mkdir(exist_ok=True)
+    (OUT_DIR / "due_dates.html").write_text(html, encoding="utf-8")
+
+    # One dated HTML + PDF per day; a second run the same day overwrites them.
+    dated = OUT_DIR / f"due_dates_{datetime.now(EASTERN):%Y-%m-%d}"
+    html_path = dated.with_suffix(".html")
+    html_path.write_text(html, encoding="utf-8")
     print(
-        f"Wrote {out_path} ({len(items)} due dates found, "
+        f"Wrote {html_path} ({len(items)} due dates found, "
         f"-{DAYS_BEHIND}d to +{DAYS_AHEAD}d from now)"
     )
+
+    pdf_path = dated.with_suffix(".pdf")
+    try:
+        write_pdf(html, pdf_path)
+    except Exception as exc:
+        print(f"Warning: PDF not written ({exc}); the HTML is still up to date.", file=sys.stderr)
+    else:
+        print(f"Wrote {pdf_path}")
 
 
 if __name__ == "__main__":
