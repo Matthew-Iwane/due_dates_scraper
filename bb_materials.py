@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import functools
 import json
 import os
 import re
@@ -123,24 +124,39 @@ class Blackboard:
         except json.JSONDecodeError:
             return None
 
+    def api_get_all(self, url: str, note: str = "") -> list[dict]:
+        """Every result of a list endpoint, following its paging.nextPage links.
+
+        List endpoints cap each reply at `limit` items and point at the rest
+        with a relative nextPage URL; reading only the first page silently
+        drops whatever comes after it.
+        """
+        results: list[dict] = []
+        while url:
+            data = self.api_get(url, note)
+            if data is None:
+                break
+            results.extend(data.get("results", []))
+            next_page = (data.get("paging") or {}).get("nextPage")
+            next_url = urljoin(BB_ORIGIN, next_page) if next_page else None
+            url = next_url if next_url != url else None
+        return results
+
     def courses(self) -> list[dict]:
         """Every course you're enrolled in, as {id, name}."""
-        data = self.api_get(f"{API}/users/me/courses?expand=course&limit=100")
         out = []
-        for m in (data or {}).get("results", []):
+        for m in self.api_get_all(f"{API}/users/me/courses?expand=course&limit=100"):
             course = m.get("course") or {}
             if course.get("id"):
                 out.append({"id": course["id"], "name": course.get("name", "")})
         return out
 
     def children(self, course_id: str, content_id: str) -> list[dict]:
-        data = self.api_get(f"{API}/courses/{course_id}/contents/{content_id}/children")
-        return (data or {}).get("results", [])
+        return self.api_get_all(f"{API}/courses/{course_id}/contents/{content_id}/children")
 
     def top_level(self, course_id: str) -> list[dict]:
         """The course's top-level content (usually one folder per week)."""
-        data = self.api_get(f"{API}/courses/{course_id}/contents")
-        return (data or {}).get("results", [])
+        return self.api_get_all(f"{API}/courses/{course_id}/contents")
 
     def content(self, course_id: str, content_id: str) -> dict:
         return self.api_get(f"{API}/courses/{course_id}/contents/{content_id}") or {}
@@ -151,12 +167,12 @@ class Blackboard:
         This is what turns the user ids on posts into names, and what tells
         instructor posts apart from student ones.
         """
-        data = self.api_get(
+        members = self.api_get_all(
             f"{API}/courses/{course_id}/users?expand=user&limit=200",
             note="course roster",
         )
         out: dict[str, dict] = {}
-        for member in (data or {}).get("results", []):
+        for member in members:
             user = member.get("user") or {}
             name = user.get("name") or {}
             full = " ".join(p for p in (name.get("given"), name.get("family")) if p)
@@ -167,25 +183,22 @@ class Blackboard:
         return out
 
     def announcements(self, course_id: str) -> list[dict]:
-        data = self.api_get(
+        return self.api_get_all(
             f"{API}/courses/{course_id}/announcements?limit=100",
             note="course announcements",
         )
-        return (data or {}).get("results", [])
 
     def discussions(self, course_id: str) -> list[dict]:
-        data = self.api_get(
+        return self.api_get_all(
             f"{API}/courses/{course_id}/discussions?limit=100",
             note="discussion list",
         )
-        return (data or {}).get("results", [])
 
     def discussion_messages(self, course_id: str, discussion_id: str) -> list[dict]:
-        data = self.api_get(
+        return self.api_get_all(
             f"{API}/courses/{course_id}/discussions/{discussion_id}/messages?limit=200",
             note=f"discussion messages ({discussion_id})",
         )
-        return (data or {}).get("results", [])
 
     def walk(self, course_id: str, items: list[dict], depth: int = 0, progress=None) -> list[Node]:
         """Recursively turn raw API items into Nodes, pulling document bodies."""
@@ -388,11 +401,22 @@ def readable_paragraphs(raw: str) -> list[str]:
     return [line for line in lines if len(line) > 2]
 
 
+_HTTP = requests.Session()
+_HTTP.headers["User-Agent"] = "Mozilla/5.0"
+
+
+@functools.lru_cache(maxsize=None)
+def _download_reading(url: str) -> requests.Response:
+    """GET a reading once per run; weeks often assign the same one again."""
+    resp = _HTTP.get(url, timeout=30)
+    resp.raise_for_status()
+    return resp
+
+
 def fetch_reading(url: str, label: str, asset_dir: Path) -> str:
     """Pull one required reading into the document, or save it if it's a PDF."""
     try:
-        resp = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
+        resp = _download_reading(url)
     except Exception as exc:
         log_error(f"reading fetch failed: {label} <{url}> ({exc})")
         return f"<h3>{_escape(label)}</h3><p><em>[could not retrieve: {_escape(url)}]</em></p>"
@@ -432,6 +456,40 @@ def html_to_text(raw: str) -> str:
     if len(text) < 40:
         return ""
     return f"<p>{_escape(text)}</p>"
+
+
+# Attachments already downloaded this run, bare URL -> (bytes, mime). Lessons
+# reuse the same diagrams, and announcements repeat them, so each file is
+# fetched once per run.
+ASSET_CACHE: dict[str, tuple[bytes, str]] = {}
+
+
+def _fetch_asset(context, candidates: list[str]):
+    """First candidate URL that downloads, as (data, mime, last_status).
+
+    The cache is keyed by bare path because the signature on the same file
+    differs from one lesson to the next. Failures aren't cached; data is None
+    and last_status says why.
+    """
+    for candidate in candidates:
+        cached = ASSET_CACHE.get(candidate.split("?")[0])
+        if cached:
+            return cached[0], cached[1], None
+
+    last_status = None
+    for candidate in candidates:
+        try:
+            resp = context.request.get(urljoin(BB_ORIGIN, candidate), timeout=60_000)
+        except Exception as exc:
+            last_status = f"error {exc}"
+            continue
+        if resp.ok:
+            data = resp.body()
+            mime = (resp.headers.get("content-type") or "").split(";")[0].strip()
+            ASSET_CACHE[candidate.split("?")[0]] = (data, mime)
+            return data, mime, None
+        last_status = resp.status
+    return None, None, last_status
 
 
 def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
@@ -478,20 +536,7 @@ def inline_assets(context, html: str, asset_dir: Path, progress=None) -> str:
         url = candidates[0]
         name = meta.get("displayName") or meta.get("fileName") or meta.get("alt") or ""
 
-        data = mime = None
-        last_status = None
-        for candidate in candidates:
-            try:
-                resp = context.request.get(urljoin(BB_ORIGIN, candidate), timeout=60_000)
-            except Exception as exc:
-                last_status = f"error {exc}"
-                continue
-            if resp.ok:
-                data = resp.body()
-                mime = (resp.headers.get("content-type") or "").split(";")[0].strip()
-                break
-            last_status = resp.status
-
+        data, mime, last_status = _fetch_asset(context, candidates)
         if data is None:
             log_error(f"could not fetch: {name or url} (HTTP {last_status})")
             # The filename is usually descriptive ("A Cache Hierarchy with L1,

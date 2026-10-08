@@ -22,6 +22,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from html import escape
 from datetime import date, datetime, timedelta, timezone
@@ -209,15 +210,21 @@ def fetch_blackboard(inspect_only: bool = False) -> list[DueItem]:
         print("Skipping Blackboard: set BB_ICS_URL or BB_ICS_URLS.", file=sys.stderr)
         return []
 
-    items: list[DueItem] = []
-    for course_label, url in feeds:
-        desc = f"Blackboard calendar ({course_label or 'combined'})"
-        with tqdm(total=1, desc=desc, unit="req", disable=not _TTY) as pbar:
-            resp = requests.get(url, timeout=30)
-            resp.raise_for_status()
-            cal = Calendar.from_ical(resp.content)
-            pbar.update(1)
+    def download(url: str) -> Calendar:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        return Calendar.from_ical(resp.content)
 
+    # Feeds are independent, so download them all at once rather than in turn.
+    with tqdm(total=len(feeds), desc="Blackboard calendars", unit="feed", disable=not _TTY) as pbar:
+        with ThreadPoolExecutor() as pool:
+            futures = [pool.submit(download, url) for _, url in feeds]
+            for _ in as_completed(futures):
+                pbar.update(1)
+    calendars = [f.result() for f in futures]
+
+    items: list[DueItem] = []
+    for (course_label, _), cal in zip(feeds, calendars):
         events = list(cal.walk("VEVENT"))
 
         if inspect_only:
@@ -357,19 +364,18 @@ def _render_table(items: list[DueItem], now: datetime, source_header: str) -> st
   </table>"""
 
 
-def render_html(items: list[DueItem]) -> str:
+def render_html(items: list[DueItem], now: datetime) -> str:
     """The full dashboard page: things to submit, deadline reminders, everything else.
 
     style.css is inlined rather than linked so the page renders the same from
     due_dates/ and when printed to PDF.
     """
-    now = datetime.now(timezone.utc)
     todo = _render_table([i for i in items if i.gradable], now, "Submit on")
     reminders = _render_table([i for i in items if _is_reminder(i)], now, "Source")
     other = _render_table(
         [i for i in items if not i.gradable and not _is_reminder(i)], now, "Source"
     )
-    generated = datetime.now(EASTERN).strftime("%b %d, %Y %I:%M %p")
+    generated = now.astimezone(EASTERN).strftime("%b %d, %Y %I:%M %p")
 
     legend = "".join(
         f'<span class="legend-item"><span class="dot {slug}"></span>{label}</span>'
@@ -434,15 +440,23 @@ def main() -> None:
         fetch_blackboard(inspect_only=True)
         return
 
-    items = _safe_fetch("Gradescope", fetch_gradescope) + _safe_fetch("Blackboard", fetch_blackboard)
+    # The two sources don't depend on each other, so fetch them side by side.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        gradescope = pool.submit(_safe_fetch, "Gradescope", fetch_gradescope)
+        blackboard = pool.submit(_safe_fetch, "Blackboard", fetch_blackboard)
+        items = gradescope.result() + blackboard.result()
+
+    # One timestamp for the whole run, so the window, urgency colours and
+    # "Generated" line all agree.
+    now = datetime.now(timezone.utc)
     items = [i for i in drop_gradescope_copies(items) if not i.submitted]
-    items = filter_window(items, datetime.now(timezone.utc))
-    html = render_html(items)
+    items = filter_window(items, now)
+    html = render_html(items, now)
     OUT_DIR.mkdir(exist_ok=True)
     (OUT_DIR / "due_dates.html").write_text(html, encoding="utf-8")
 
     # One dated HTML + PDF per day; a second run the same day overwrites them.
-    dated = OUT_DIR / f"due_dates_{datetime.now(EASTERN):%Y-%m-%d}"
+    dated = OUT_DIR / f"due_dates_{now.astimezone(EASTERN):%Y-%m-%d}"
     html_path = dated.with_suffix(".html")
     html_path.write_text(html, encoding="utf-8")
     print(
